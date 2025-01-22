@@ -1,0 +1,175 @@
+<?xml version="1.0" ?>
+<mujoco model="dual_kinova3">
+  <compiler angle="radian"/>
+  <actuator>
+    <!-- Physical limits of the actuator. Pulled directly from datasheet. See pg 24 of:
+         https://www.kinovarobotics.com/sites/default/files/UG-014_KINOVA_Gen3_Ultra_lightweight_robot_User_guide_EN_R06_0.pdf -->
+    <motor ctrllimited="true" ctrlrange="-32.0 32.0" joint="left_Actuator1" name="left_torq_j1"/>
+    <motor ctrllimited="true" ctrlrange="-32.0 32.0" joint="left_Actuator2" name="left_torq_j2"/>
+    <motor ctrllimited="true" ctrlrange="-32.0 32.0" joint="left_Actuator3" name="left_torq_j3"/>
+    <motor ctrllimited="true" ctrlrange="-32.0 32.0" joint="left_Actuator4" name="left_torq_j4"/>
+    <motor ctrllimited="true" ctrlrange="-32.0 32.0" joint="left_Actuator5" name="left_torq_j5"/>
+    <motor ctrllimited="true" ctrlrange="-13.0 13.0" joint="left_Actuator6" name="left_torq_j6"/>
+    <motor ctrllimited="true" ctrlrange="-13.0 13.0" joint="left_Actuator7" name="left_torq_j7"/>
+    <motor ctrllimited="true" ctrlrange="-32.0 32.0" joint="right_Actuator1" name="right_torq_j1"/>
+    <motor ctrllimited="true" ctrlrange="-32.0 32.0" joint="right_Actuator2" name="right_torq_j2"/>
+    <motor ctrllimited="true" ctrlrange="-32.0 32.0" joint="right_Actuator3" name="right_torq_j3"/>
+    <motor ctrllimited="true" ctrlrange="-32.0 32.0" joint="right_Actuator4" name="right_torq_j4"/>
+    <motor ctrllimited="true" ctrlrange="-32.0 32.0" joint="right_Actuator5" name="right_torq_j5"/>
+    <motor ctrllimited="true" ctrlrange="-13.0 13.0" joint="right_Actuator6" name="right_torq_j6"/>
+    <motor ctrllimited="true" ctrlrange="-13.0 13.0" joint="right_Actuator7" name="right_torq_j7"/>
+  </actuator>
+  <asset>
+    <mesh name="base_link" file="meshes/base_link.stl"/>
+    <mesh name="shoulder_link" file="meshes/shoulder_link.stl"/>
+    <mesh name="half_arm_1_link" file="meshes/half_arm_1_link.stl"/>
+    <mesh name="half_arm_2_link" file="meshes/half_arm_2_link.stl"/>
+    <mesh name="forearm_link" file="meshes/forearm_link.stl"/>
+    <mesh name="spherical_wrist_1_link" file="meshes/spherical_wrist_1_link.stl"/>
+    <mesh name="spherical_wrist_2_link" file="meshes/spherical_wrist_2_link.stl"/>
+    <mesh name="bracelet_with_vision_link" file="meshes/bracelet_with_vision_link.stl"/>
+    <mesh name="upper_torso" file="meshes/dual_arm_torso_coarse.STL"/>
+  </asset>
+  <worldbody>
+    <body name="base" pos="0 0 0">
+      <!-- robot view -->
+      <camera mode="fixed" name="robotview" pos="1.0 0 0.4" quat="0.653 0.271 0.271 0.653"/>
+      <inertial diaginertia="0 0 0" mass="0" pos="0 0 0"/>
+      <body name="vention_upper_body" pos="0 0 0" quat="1 0 0 0">
+        <inertial pos="0 0 0" mass="9.2" diaginertia="0.5 0.5 0.3"/> <!-- 9.2 kg inertia estimated-->
+        <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" name="upper_torso_visual" mesh="upper_torso"/>
+        <geom type="mesh" conaffinity="0" rgba="0.117647 0.168627 0.239215 1" mesh="upper_torso" name="upper_torso_collision"/>
+        <!-- Left arm (Leonardao) mount attached here -->
+        <!-- center width 116 mm -->
+        <!-- note that the quaternion is in the form of w x y z -->
+        <body name="left_arm_fixed_base_link" pos="0 0.058 0.232548" quat="0.707108 -0.707105 0 0"> 
+          <site name="left_center" pos="0 0 0" size="0.01" rgba="1 0.3 0.3 1" group="2"/>
+          <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" name="left_base_visual" mesh="base_link"/>
+          <geom type="mesh" conaffinity="0" rgba="0.75294 0.75294 0.75294 1" mesh="base_link" name="left_base_collision"/>
+          <body name="left_shoulder_link" pos="0 0 0.15643" quat="-3.67321e-06 1 0 0">
+            <inertial pos="-2.3e-05 -0.010364 -0.07336" quat="0.707051 0.0451246 -0.0453544 0.704263" mass="1.3773" diaginertia="0.00488868 0.00457 0.00135132"/>
+            <joint name="left_Actuator1" pos="0 0 0" axis="0 0 1" damping="0.1"/>
+            <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" name="left_s_visual" mesh="shoulder_link"/>
+            <geom type="mesh" conaffinity="0" rgba="0.75294 0.75294 0.75294 1" mesh="shoulder_link" name="left_s_collision"/>
+            <body name="left_HalfArm1_Link" pos="0 0.005375 -0.12838" quat="0.707105 0.707108 0 0">
+              <inertial pos="-4.4e-05 -0.09958 -0.013278" quat="0.482348 0.516286 -0.516862 0.483366" mass="1.1636" diaginertia="0.0113017 0.011088 0.00102532"/>
+              <joint name="left_Actuator2" pos="0 0 0" axis="0 0 1" limited="true" range="-2.41 2.41" damping="0.1"/>
+              <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" name="left_ha1_visual" mesh="half_arm_1_link"/>
+              <geom type="mesh" conaffinity="0" rgba="0.75294 0.75294 0.75294 1" mesh="half_arm_1_link" name="left_ha1_collision"/>
+              <body name="left_HalfArm2_Link" pos="0 -0.21038 -0.006375" quat="0.707105 -0.707108 0 0">
+                <inertial pos="-4.4e-05 -0.006641 -0.117892" quat="0.706144 0.0213722 -0.0209128 0.707437" mass="1.1636" diaginertia="0.0111633 0.010932 0.00100671"/>
+                <joint name="left_Actuator3" pos="0 0 0" axis="0 0 1" damping="0.1"/>
+                <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" name="left_ha2_visual" mesh="half_arm_2_link"/>
+                <geom type="mesh" conaffinity="0" rgba="0.75294 0.75294 0.75294 1" mesh="half_arm_2_link" name="left_ha2_collision"/>
+                <body name="left_forearm_link" pos="0 0.006375 -0.21038" quat="0.707105 0.707108 0 0">
+                  <inertial pos="-1.8e-05 -0.075478 -0.015006" quat="0.483678 0.515961 -0.515859 0.483455" mass="0.9302" diaginertia="0.00834839 0.008147 0.000598606"/>
+                  <joint name="left_Actuator4" pos="0 0 0" axis="0 0 1" limited="true" range="-2.66 2.66" damping="0.1"/>
+                  <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" name="left_f_visual" mesh="forearm_link"/>
+                  <geom type="mesh" conaffinity="0" rgba="0.75294 0.75294 0.75294 1" mesh="forearm_link" name="left_f_collision"/>
+                  <body name="left_SphericalWrist1_Link" pos="0 -0.20843 -0.006375" quat="0.707105 -0.707108 0 0">
+                    <inertial pos="1e-06 -0.009432 -0.063883" quat="0.703558 0.0707492 -0.0707492 0.703558" mass="0.6781" diaginertia="0.00165901 0.001596 0.000346988"/>
+                    <joint name="left_Actuator5" pos="0 0 0" axis="0 0 1" damping="0.1"/>
+                    <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" name="left_w1_visual" mesh="spherical_wrist_1_link"/>
+                    <geom type="mesh" conaffinity="0" rgba="0.75294 0.75294 0.75294 1" mesh="spherical_wrist_1_link" name="left_w1_collision"/>
+                    <body name="left_SphericalWrist2_Link" pos="0 0.00017505 -0.10593" quat="0.707105 0.707108 0 0">
+                      <inertial pos="1e-06 -0.045483 -0.00965" quat="0.44426 0.550121 -0.550121 0.44426" mass="0.6781" diaginertia="0.00170087 0.001641 0.00035013"/>
+                      <joint name="left_Actuator6" pos="0 0 0" axis="0 0 1" limited="true" range="-2.23 2.23" damping="0.01"/>
+                      <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" name="left_w2_visual" mesh="spherical_wrist_2_link"/>
+                      <geom type="mesh" conaffinity="0" rgba="0.75294 0.75294 0.75294 1" mesh="spherical_wrist_2_link" name="left_w2_collision"/>
+                      <body name="left_Bracelet_Link" pos="0 -0.10593 -0.00017505" quat="0.707105 -0.707108 0 0">
+                        <inertial pos="-0.000281 -0.011402 -0.029798" quat="0.601961 0.40663 -0.381169 0.571843" mass="0.5006" diaginertia="0.000657515 0.000586793 0.000320693"/>
+                        <joint name="left_Actuator7" pos="0 0 0" axis="0 0 1" damping="0.01"/>
+                        <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" name="left_b_visual" mesh="bracelet_with_vision_link"/>
+                        <geom type="mesh" conaffinity="0" rgba="0.75294 0.75294 0.75294 1" mesh="bracelet_with_vision_link" name="left_b_collision"/>
+                        <body name="left_hand" pos="0 0 -0.0615" quat="0 0.707105 -0.707108 0">
+                          <!-- This camera points out from the eef. -->
+                          <camera mode="fixed" name="left_eye_in_hand" pos="0.05 0 0" quat="0 0.707108 0.707108 0" fovy="75"/>
+                          <!-- To add gripper -->
+                        </body>
+                        <!-- End of left hand -->
+                      </body>
+                      <!-- End of bracelet link -->
+                    </body>
+                    <!-- End of spherical wrist 2 link -->
+                  </body>
+                  <!-- End of spherical wrist 1 link -->
+                </body>
+                <!-- End of forearm link -->
+              </body>
+              <!-- End of half arm 2 link -->
+            </body>
+            <!-- End of half arm 1 link -->
+          </body>
+          <!-- End of shoulder link -->
+        </body>
+        <!-- End of left arm fixed base link -->
+        <!-- Right arm (Richardo) mount attached here -->
+        <!-- center width 116 mm -->
+        <!-- note that the quaternion is in the form of w x y z -->
+        <body name="right_arm_fixed_base_link" pos="0 -0.058 0.232548" quat="0.707108 0.707105 0 0"> 
+          <site name="right_center" pos="0 0 0" size="0.01" rgba="1 0.3 0.3 1" group="2"/>
+          <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" name="right_base_visual" mesh="base_link"/>
+          <geom type="mesh" conaffinity="0" rgba="0.75294 0.75294 0.75294 1" mesh="base_link" name="right_base_collision"/>
+          <body name="right_shoulder_link" pos="0 0 0.15643" quat="-3.67321e-06 1 0 0">
+            <inertial pos="-2.3e-05 -0.010364 -0.07336" quat="0.707051 0.0451246 -0.0453544 0.704263" mass="1.3773" diaginertia="0.00488868 0.00457 0.00135132"/>
+            <joint name="right_Actuator1" pos="0 0 0" axis="0 0 1" damping="0.1"/>
+            <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" name="right_s_visual" mesh="shoulder_link"/>
+            <geom type="mesh" conaffinity="0" rgba="0.75294 0.75294 0.75294 1" mesh="shoulder_link" name="right_s_collision"/>
+            <body name="right_HalfArm1_Link" pos="0 0.005375 -0.12838" quat="0.707105 0.707108 0 0">
+              <inertial pos="-4.4e-05 -0.09958 -0.013278" quat="0.482348 0.516286 -0.516862 0.483366" mass="1.1636" diaginertia="0.0113017 0.011088 0.00102532"/>
+              <joint name="right_Actuator2" pos="0 0 0" axis="0 0 1" limited="true" range="-2.41 2.41" damping="0.1"/>
+              <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" name="right_ha1_visual" mesh="half_arm_1_link"/>
+              <geom type="mesh" conaffinity="0" rgba="0.75294 0.75294 0.75294 1" mesh="half_arm_1_link" name="right_ha1_collision"/>
+              <body name="right_HalfArm2_Link" pos="0 -0.21038 -0.006375" quat="0.707105 -0.707108 0 0">
+                <inertial pos="-4.4e-05 -0.006641 -0.117892" quat="0.706144 0.0213722 -0.0209128 0.707437" mass="1.1636" diaginertia="0.0111633 0.010932 0.00100671"/>
+                <joint name="right_Actuator3" pos="0 0 0" axis="0 0 1" damping="0.1"/>
+                <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" name="right_ha2_visual" mesh="half_arm_2_link"/>
+                <geom type="mesh" conaffinity="0" rgba="0.75294 0.75294 0.75294 1" mesh="half_arm_2_link" name="right_ha2_collision"/>
+                <body name="right_forearm_link" pos="0 0.006375 -0.21038" quat="0.707105 0.707108 0 0">
+                  <inertial pos="-1.8e-05 -0.075478 -0.015006" quat="0.483678 0.515961 -0.515859 0.483455" mass="0.9302" diaginertia="0.00834839 0.008147 0.000598606"/>
+                  <joint name="right_Actuator4" pos="0 0 0" axis="0 0 1" limited="true" range="-2.66 2.66" damping="0.1"/>
+                  <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" name="right_f_visual" mesh="forearm_link"/>
+                  <geom type="mesh" conaffinity="0" rgba="0.75294 0.75294 0.75294 1" mesh="forearm_link" name="right_f_collision"/>
+                  <body name="right_SphericalWrist1_Link" pos="0 -0.20843 -0.006375" quat="0.707105 -0.707108 0 0">
+                    <inertial pos="1e-06 -0.009432 -0.063883" quat="0.703558 0.0707492 -0.0707492 0.703558" mass="0.6781" diaginertia="0.00165901 0.001596 0.000346988"/>
+                    <joint name="right_Actuator5" pos="0 0 0" axis="0 0 1" damping="0.1"/>
+                    <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" name="right_w1_visual" mesh="spherical_wrist_1_link"/>
+                    <geom type="mesh" conaffinity="0" rgba="0.75294 0.75294 0.75294 1" mesh="spherical_wrist_1_link" name="right_w1_collision"/>
+                    <body name="right_SphericalWrist2_Link" pos="0 0.00017505 -0.10593" quat="0.707105 0.707108 0 0">
+                      <inertial pos="1e-06 -0.045483 -0.00965" quat="0.44426 0.550121 -0.550121 0.44426" mass="0.6781" diaginertia="0.00170087 0.001641 0.00035013"/>
+                      <joint name="right_Actuator6" pos="0 0 0" axis="0 0 1" limited="true" range="-2.23 2.23" damping="0.01"/>
+                      <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" name="right_w2_visual" mesh="spherical_wrist_2_link"/>
+                      <geom type="mesh" conaffinity="0" rgba="0.75294 0.75294 0.75294 1" mesh="spherical_wrist_2_link" name="right_w2_collision"/>
+                      <body name="right_Bracelet_Link" pos="0 -0.10593 -0.00017505" quat="0.707105 -0.707108 0 0">
+                        <inertial pos="-0.000281 -0.011402 -0.029798" quat="0.601961 0.40663 -0.381169 0.571843" mass="0.5006" diaginertia="0.000657515 0.000586793 0.000320693"/>
+                        <joint name="right_Actuator7" pos="0 0 0" axis="0 0 1" damping="0.01"/>
+                        <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" name="right_b_visual" mesh="bracelet_with_vision_link"/>
+                        <geom type="mesh" conaffinity="0" rgba="0.75294 0.75294 0.75294 1" mesh="bracelet_with_vision_link" name="right_b_collision"/>
+                        <body name="right_hand" pos="0 0 -0.0615" quat="0 0.707105 -0.707108 0">
+                          <!-- This camera points out from the eef. -->
+                          <camera mode="fixed" name="right_eye_in_hand" pos="0.05 0 0" quat="0 0.707108 0.707108 0" fovy="75"/>
+                          <!-- To add gripper -->
+                        </body>
+                        <!-- End of left hand -->
+                      </body>
+                      <!-- End of bracelet link -->
+                    </body>
+                    <!-- End of spherical wrist 2 link -->
+                  </body>
+                  <!-- End of spherical wrist 1 link -->
+                </body>
+                <!-- End of forearm link -->
+              </body>
+              <!-- End of half arm 2 link -->
+            </body>
+            <!-- End of half arm 1 link -->
+          </body>
+          <!-- End of shoulder link -->
+        </body>
+        <!-- End of right arm fixed base link -->
+      </body>
+      <!-- End of vention upper body -->
+    </body>
+    <!-- End of base -->
+  </worldbody>
+</mujoco>
