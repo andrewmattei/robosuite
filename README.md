@@ -2,6 +2,11 @@
 
 ![gallery of_environments](docs/images/gallery.png)
 
+Added Dual Kinova Gen3 Robot into the Robot Collection.
+<p float="left">
+  <img src="docs/images/dual_kinova3.png" width="400">
+</p>
+
 [**[Homepage]**](https://robosuite.ai/) &ensp; [**[White Paper]**](https://arxiv.org/abs/2009.12293) &ensp; [**[Documentations]**](https://robosuite.ai/docs/overview.html) &ensp; [**[ARISE Initiative]**](https://github.com/ARISE-Initiative)
 
 -------
