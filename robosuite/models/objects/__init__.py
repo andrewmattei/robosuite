@@ -18,6 +18,7 @@ from .xml_objects import (
     PlateWithHoleObject,
     DoorObject,
     SphereObject,
+    BounceballObject,
 )
 from .primitive import *
 from .composite import *

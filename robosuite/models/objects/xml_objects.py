@@ -41,8 +41,13 @@ class LemonObject(MujocoXMLObject):
 
     def __init__(self, name):
         super().__init__(
-            xml_path_completion("objects/lemon.xml"), name=name, obj_type="all", duplicate_collision_geoms=True
+            xml_path_completion("objects/lemon.xml"), 
+            name=name, 
+            obj_type="all", 
+            duplicate_collision_geoms=True
         )
+
+
 
 
 class MilkObject(MujocoXMLObject):
@@ -311,3 +316,41 @@ class SphereObject(MujocoXMLObject):
             obj_type="visual",
             duplicate_collision_geoms=True,
         )
+
+class PlateWithHoleObject(MujocoXMLObject):
+    """
+    Square plate with a hole in the center (used in PegInHole)
+    """
+
+    def __init__(self, name):
+        super().__init__(
+            xml_path_completion("objects/plate-with-hole.xml"),
+            name=name,
+            joints=None,
+            obj_type="all",
+            duplicate_collision_geoms=True,
+        )
+class BounceballObject(MujocoXMLObject):
+    """
+    Ball object that is designed to bounce elastically.
+    """
+
+    def __init__(self,name):
+        super().__init__(
+            xml_path_completion("objects/bounceball.xml"),
+            name=name,
+            joints=None,
+            obj_type="all",
+            duplicate_collision_geoms=True,
+        )
+
+        # # Get element tree
+        # tree = self._obj.getroot()
+
+        # # Find and modify the geom
+        # geom = tree.find(".//geom")
+        # geom.set("size", array_to_string(size))
+        # geom.set("density", str(density))
+        # geom.set("friction", array_to_string(friction))
+        # geom.set("solref", array_to_string(solref))
+        # geom.set("rgba", array_to_string(rgba))

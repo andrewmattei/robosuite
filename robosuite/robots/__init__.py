@@ -30,7 +30,7 @@ ROBOT_CLASS_MAPPING = {
     "GR1FloatingBody": LeggedRobot,
     "PandaDexRH": FixedBaseRobot,
     "PandaDexLH": FixedBaseRobot,
-    "DualKinova3": FixedBaseRobot,
+    "DualKinova3": WheeledRobot,
 }
 
 target_type_mapping = {
