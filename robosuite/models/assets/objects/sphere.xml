@@ -1,0 +1,11 @@
+<mujoco model="translucent_sphere">
+    <asset>
+        <material name="translucent_material" rgba="0.5 0.5 0.5 0.5"/>
+    </asset>
+    <worldbody>
+        <body name="translucent_sphere_body">
+            <geom name="translucent_sphere" type="mesh" mesh="sphere_mesh" material="translucent_material" contype="0" conaffinity="0"/>
+            <!-- <geom type="sphere" rgba="0 0 1 1"/> -->
+        </body>
+    </worldbody>
+</mujoco>

@@ -297,3 +297,17 @@ class DoorObject(MujocoXMLObject):
         dic = super().important_sites
         dic.update({"handle": self.naming_prefix + "handle"})
         return dic
+
+class SphereObject(MujocoXMLObject):
+    """
+    Sphere to respresent NeRF trajectory
+    """
+
+    def __init__(self, name):
+        super().__init__(
+            xml_path_completion("objects/sphere.xml"),
+            name=name,
+            joints=None,
+            obj_type="visual",
+            duplicate_collision_geoms=True,
+        )

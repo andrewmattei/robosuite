@@ -116,6 +116,7 @@ if __name__ == "__main__":
     action_dim = controller_settings[controller_name][0]
     num_test_steps = controller_settings[controller_name][1]
     test_value = controller_settings[controller_name][2]
+    print(test_value)
 
     # Define the number of timesteps to use per controller action as well as timesteps in between actions
     steps_per_action = 75
@@ -159,7 +160,10 @@ if __name__ == "__main__":
                 action[3:6] = vec
             else:
                 action[count] = test_value
+            print(action)
             total_action = np.tile(action, n)
+            print(total_action)
+            print('a')
             env.step(total_action)
             env.render()
 

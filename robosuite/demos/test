@@ -1,0 +1,176 @@
+from robosuite.robots import register_robot_class
+from robosuite.models.robots import DualKinova3
+import time
+import numpy as np
+from robosuite.controllers import load_composite_controller_config
+import robosuite as suite
+import mujoco
+
+# Load the controller configuration
+controller_config = load_composite_controller_config(controller="BASIC")
+
+@register_robot_class("WheeledRobot")
+class MobileKinova(DualKinova3):
+    @property
+    def default_base(self):
+        return "OmronMobileBase"
+
+# Create environment with the controller configuration
+env = suite.make(
+    env_name="Lift",
+    robots="DualKinova3",
+    controller_configs=controller_config,
+    has_renderer=True,
+    has_offscreen_renderer=False,
+    render_camera="frontview",
+    use_camera_obs=False,
+    control_freq=20,
+)
+
+# Reset the environment
+env.reset()
+
+# # Turn off gravity
+# env.sim.model.opt.gravity[:] = 0
+
+# print("here")
+
+# # Create the Mujoco viewer
+# # mujoco.viewer.launch(env.sim.model._model, env.sim.data._data)
+
+# # Access the joint indices
+# joint_indices = [env.sim.model.get_joint_qpos_addr(joint) for joint in env.robots[0].robot_model.joints]
+# print(joint_indices)
+# # Set the desired joint angles (in radians)
+# desired_joint_angles = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # Example angles
+
+# # Set the desired joint angles
+# for i, joint_index in enumerate(joint_indices):
+#     env.sim.data.qpos[joint_index] = desired_joint_angles[i]
+# print("here")
+
+# mujoco.viewer.launch(env.sim.model._model, env.sim.data._data)
+
+# # Step the simulation to apply the changes
+# env.sim.step()
+
+# # Render the environment to visualize the changes
+# env.render()
+# Control loop to hold the position
+
+# mujoco.viewer.launch_passive(env.sim.model._model, env.sim.data._data)
+
+# while True:
+#     # Set the desired joint angles
+#     action = np.zeros(env.robots[0].dof)
+#     for i, joint_index in enumerate(joint_indices):
+#         # env.sim.data.qpos[joint_index] = desired_joint_angles[i]
+#         action[i] = desired_joint_angles[i]
+    
+#     print(action)
+
+#     # Step the simulation to apply the changes
+#     env.step(action)
+    
+#     print("here1")
+#     # Render the environment to visualize the changes
+#     env.render()
+#     print("here2")
+#     # Sleep for a short duration to control the loop frequency
+#     time.sleep(1)
+
+if __name__ == "__main__":
+    # # Create environment
+    # env = suite.make(
+    #     env_name="Bounce",
+    #     robots="DualKinova3",
+    #     has_renderer=True,
+    #     has_offscreen_renderer=False,
+    #     use_camera_obs=False,
+    #     control_freq=20,
+    #     render_camera="frontview",
+    # )
+
+    # Reset the environment
+    env.reset()
+
+    print("here")
+
+    # Create the Mujoco viewer
+    # mujoco.viewer.launch(env.sim.model._model, env.sim.data._data)
+
+    # Access the joint indices
+    joint_indices = [env.sim.model.get_joint_qpos_addr(joint) for joint in env.robots[0].robot_model.joints]
+    print("Joint indices in qpos:", joint_indices)
+
+    # Example: Access the position of the first joint
+    first_joint_index = joint_indices[0]
+    first_joint_position = env.sim.data.qpos[first_joint_index]
+    print("Position of the first joint:", first_joint_position)
+
+    # Access the positions of all joints
+    joint_positions = [env.sim.data.qpos[idx] for idx in joint_indices]
+    print("Positions of all joints:", joint_positions)
+
+    # Set the desired joint angles (in radians)
+    desired_joint_angles = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # Example angles
+            
+    # Get model and data
+    model = env.sim.model._model
+    data = env.sim.data._data
+    # Set smaller timestep for more accurate physics simulation
+    model.opt.timestep = 0.0005  # 0.5ms timestep
+
+    # Disable the physics of the robot by setting the mass to zero
+    for body_id in range(model.nbody):
+        body_name = env.sim.model.body_id2name(body_id)
+        body_is_robot = "robot" in body_name or "arm" in body_name or "gripper" in body_name or "finger" in body_name
+        if body_is_robot:
+            # Make the body static by setting its mass to zero
+            model.body_mass[body_id] = 0
+            # Set the body's inertia to zero
+            model.body_inertia[body_id] = [0, 0, 0]
+
+    # Lists to store time, force and position data
+    times = []
+    forces = []
+    z_positions = []
+    contact_object = 'bounceball_g0'
+    simulation_time = 10
+    
+    with mujoco.viewer.launch_passive(model, data) as viewer:
+        # Set initial camera parameters
+        # viewer.cam.distance = 3.0
+        # viewer.cam.azimuth = 90
+        # viewer.cam.elevation = -45
+        # viewer.cam.lookat[:] = np.array([0.0, -0.25, 0.824])
+
+        start = time.time()
+        while viewer.is_running() and time.time() - start < simulation_time:
+            step_start = time.time()
+            
+            # Step the simulation
+            action = np.zeros(env.robots[0].dof)
+            for i, joint_index in enumerate(joint_indices):
+                action[i] = desired_joint_angles[i]
+            print('action', action)
+            # total_action = np.tile(action, 2)
+            # print('total action', total_action)
+            
+            action = np.array([np.pi/2, -np.pi/2, np.pi/2, -np.pi/2, 0.0, -np.pi/6, -np.pi/2,
+                         -np.pi/2, np.pi/2, -np.pi/2, np.pi/2, 0.0, np.pi/6, np.pi/2])
+            print(data.qpos)
+            # data.qpos[:] = action
+            # Apply the action to the robot
+            # env.step(action)
+            mujoco.mj_step(model, data)
+            
+            # Viewer updates (unchanged)
+            with viewer.lock():
+                viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
+            viewer.sync()
+            
+            # Maintain real-time simulation
+            time_until_next_step = model.opt.timestep - (time.time() - step_start)
+            if time_until_next_step > 0:
+                time.sleep(time_until_next_step)
