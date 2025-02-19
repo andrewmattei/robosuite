@@ -56,7 +56,7 @@ class Bounce(ManipulationEnv):
         self.table_offset = np.array((0, 0, 0.7))  # made changes
 
         # Omron LD-60 Mobile Base setting
-        self.init_torso_height = 0.341
+        self.init_torso_height = 0.342
 
         # reward configuration
         self.reward_scale = reward_scale
@@ -203,15 +203,14 @@ class Bounce(ManipulationEnv):
         """
         Resets simulation internal configurations.
         """
-        super()._reset_internal()
-
         # set the mobilebase joint torso height if it exists
+        self.deterministic_reset = True
         active_robot = self.robots[0]
         if active_robot.robot_model._torso_joints is not None:
-            
-            torso_name = active_robot.robot_model._torso_joints[0]
-            self.sim.data.qpos[self.sim.model.get_joint_qpos_addr(torso_name)] = self.init_torso_height
-            # also set the initial torso height in the robot model
+            # dont need this since it's in super.reset()
+            # torso_name = active_robot.robot_model._torso_joints[0]
+            # self.sim.data.qpos[self.sim.model.get_joint_qpos_addr(torso_name)] = self.init_torso_height
+            # # also set the initial torso height in the robot model
             active_robot.init_torso_qpos = np.array([self.init_torso_height,])
 
         # Reset all object positions using initializer sampler if we're not directly loading from an xml
@@ -222,7 +221,17 @@ class Bounce(ManipulationEnv):
             # Loop through all objects and reset their positions
             for obj_pos, obj_quat, obj in object_placements.values():
                 self.sim.data.set_joint_qpos(obj.joints[0], np.concatenate([np.array(obj_pos), np.array(obj_quat)]))
+        else:
+            # Deterministic reset -- set all objects to their specified positions
+            object_placements = self.placement_initializer.sample()
 
+            # Loop through all objects and reset their positions
+            for obj_pos, obj_quat, obj in object_placements.values():
+                obj_pos = np.array([0,0,obj_pos[2]]) # remove the randomness in x,y of the ball
+                obj_quat = np.array([1,0,0,0]) # remove the randomness in the orientation of the ball
+                self.sim.data.set_joint_qpos(obj.joints[0], np.concatenate([np.array(obj_pos), np.array(obj_quat)]))
+
+        super()._reset_internal()
 
 
     def _apply_gravity_compensation(self):
@@ -275,8 +284,8 @@ class TimeKeeper:
 
 if __name__ == "__main__":
 
-    simulation_time = 5.0 # seconds
-    env_step_size = 0.0005 # seconds
+    simulation_time = 3.0 # seconds
+    env_step_size = 0.0001 # seconds
     horizon = int(simulation_time / env_step_size)
     # Create environment
     # note default controller is in "robosuite/controllers/config/robots/default_dualkinova3.json"
@@ -294,7 +303,6 @@ if __name__ == "__main__":
 
     # Reset the environment
     env.reset()
-
 
     active_robot = env.robots[0]
 
@@ -345,14 +353,13 @@ if __name__ == "__main__":
     with mujoco.viewer.launch_passive(model, data) as viewer:
         # Set initial camera parameters
         viewer.cam.distance = 3.0
-        viewer.cam.azimuth = 90
+        viewer.cam.azimuth = 120
         viewer.cam.elevation = -45
         viewer.cam.lookat[:] = np.array([0.0, -0.25, 0.824])
 
-        start = time.time()
         time_keeper = TimeKeeper(desired_freq=1/model.opt.timestep)
 
-        while viewer.is_running() and not env.done and time.time() - start < simulation_time:
+        while viewer.is_running() and not env.done and data.time < simulation_time:
             if time_keeper.should_step():
                 # Simulation step
                 
