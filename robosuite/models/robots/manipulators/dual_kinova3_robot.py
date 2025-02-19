@@ -12,34 +12,38 @@ class DualKinova3(ManipulatorModel):
         idn (int or str): Number or some other unique identification string for this robot instance
     """
 
-    arms = ["left", "right"]
+    arms = ["right", "left"]
 
     def __init__(self, idn=0):
         super().__init__(xml_path_completion("robots/dual_kinova3/robot.xml"), idn=idn)
 
     @property
     def default_base(self):
-        return "RethinkMount"
+        return "OmronMobileBase"
 
     @property
     def default_gripper(self):
         """
-        Since this is bimanual robot, returns dict with `'left'`, `'right'` keywords corresponding to their respective
+        Since this is bimanual robot, returns dict with `'right'`, `'left'` keywords corresponding to their respective
         values
 
         Returns:
             dict: Dictionary containing arm-specific gripper names
         """
-        return {"left": "Robotiq85Gripper", "right": "Robotiq85Gripper"}
+        return {"right": "Robotiq85Gripper", "left": "Robotiq85Gripper"}
 
     @property
     def default_controller_config(self):
-        return {"left": "osc_pose", "right": "osc_pose"}
+        return {"right": "default_kinova3", "left": "default_kinova3"}
 
     @property
     def init_qpos(self):
-        return np.array([np.pi/2, -np.pi/2, np.pi/2, -np.pi/2, 0.0, -np.pi/6, -np.pi/2,
-                         -np.pi/2, np.pi/2, -np.pi/2, np.pi/2, 0.0, np.pi/6, np.pi/2])
+        return np.array([
+            # Right arm joints
+            np.pi/2, np.pi/2, -np.pi/2, np.pi/2, 0.0, np.pi/6, np.pi/2,
+            # Left arm joints
+            np.pi/2, -np.pi/2, np.pi/2, -np.pi/2, 0.0, -np.pi/6, -np.pi/2
+                         ])
 
     @property
     def base_xpos_offset(self):
@@ -70,4 +74,4 @@ class DualKinova3(ManipulatorModel):
         Returns:
             dict: Dictionary containing arm-specific eef names
         """
-        return {"left": "left_hand", "right": "right_hand"}
+        return {"right": "right_hand", "left": "left_hand"}

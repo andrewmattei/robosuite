@@ -20,7 +20,7 @@ class OmronMobileBase(MobileBaseModel):
 
     @property
     def top_offset(self):
-        return np.array((0, 0, 0.5))
+        return np.array((0, 0, 0))
 
     @property
     def horizontal_radius(self):
