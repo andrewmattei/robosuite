@@ -398,7 +398,7 @@ if __name__ == "__main__":
                         total_force += normal_force
                 
                 # Record positions, times, and forces
-                ball_body_id = env.sim.model.body_name2id('sphere_ball')
+                ball_body_id = env.sim.model.body_name2id('sphere_main')
                 z_positions.append(data.xpos[ball_body_id][2])
                 times.append(data.time)
                 forces.append(total_force)  # This now includes the spike

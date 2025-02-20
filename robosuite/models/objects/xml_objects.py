@@ -303,17 +303,18 @@ class DoorObject(MujocoXMLObject):
         dic.update({"handle": self.naming_prefix + "handle"})
         return dic
 
+
 class SphereObject(MujocoXMLObject):
     """
-    Sphere to respresent NeRF trajectory
+    Ball object that is designed to bounce elastically.
     """
 
-    def __init__(self, name):
+    def __init__(self,name):
         super().__init__(
             xml_path_completion("objects/sphere.xml"),
             name=name,
             joints=None,
-            obj_type="visual",
+            obj_type="all",
             duplicate_collision_geoms=True,
         )
 

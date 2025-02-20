@@ -1,22 +1,14 @@
 <mujoco model="sphere">
-    <compiler angle="radian"/>
-    <actuator>
-        <!-- Change gear from 1 to 10 to scale the force -->
-        <motor joint="ball_z" name="z_motor" gear="1" ctrllimited="true" ctrlrange="-10 10"/>
-    </actuator>
     <asset>
         <texture type="skybox" builtin="gradient" rgb1="1 1 1" rgb2="1 1 1" width="32" height="32"/>
+        <material name="sphere_material" specular="1" shininess="0.5" rgba="0.1 0.1 0.9 1"/>
     </asset>
     <worldbody>
         <body>
             <body name="object">
-                <joint name="object_to_world" type="free" limited="false"/>
-                <inertial mass="0.001" pos="0 0 0" diaginertia="1e-6 1e-6 1e-6"/>
-                <body name="ball">
-                    <joint name="ball_z" type="slide" axis="0 0 1" limited="false"/>
-                    <inertial mass="0.05" pos="0 0 0" diaginertia="1e-3 1e-3 1e-3"/>
-                    <geom pos="0 0 0" type="sphere" size="0.025" group="0" solref="0.01 0.1" condim="4" priority="1"/>
-                </body>
+                <joint name="free" type="free"/>
+                <inertial mass="0.05" pos="0 0 0" diaginertia="1e-3 1e-3 1e-3"/>
+                <geom type="sphere" size="0.025" material="sphere_material" group="0"/>
             </body>
             <!-- Sites for object grasping -->
             <site name="bottom_site" pos="0 0 -0.025" size="0.001 0.001 0.001" rgba="0 0 0 0"/>
@@ -24,8 +16,7 @@
             <site name="horizontal_radius_site" pos="0.025 0 0" size="0.001 0.001 0.001" rgba="0 0 0 0"/>
         </body>
     </worldbody>
-
-</mujoco> 
+</mujoco>
 
 <!-- <mujoco model="sphere">
     <asset>
@@ -33,16 +24,19 @@
     </asset>
 
     <worldbody>
-        <body name="object">
-            <body name="collision" pos="0 0 0" quat="0.707107 0 0 0.707107">
-                <geom name="sphere_collision" pos="0 0 0" size="0.025" type="sphere" material="sphere_material" group="0"/>
+        <body>
+            <geom name="sphere" type="sphere" size="0.025" mass="0.05"/>
+            <body name="object">
+                <body name="collision" pos="0 0 0" quat="0.707107 0 0 0.707107">
+                    <geom name="sphere_collision" pos="0 0 0" size="0.025" type="sphere" material="sphere_material" group="0"/>
+                    <joint name="ball_z" type="slide" axis="0 0 1" limited="false"/>
+                    <inertial mass="0.05" pos="0 0 0" diaginertia="1e-3 1e-3 1e-3"/>
+                    <geom pos="0 0 0" type="sphere" size="0.025" group="0" solref="0.01 0.1" condim="4" priority="1"/>
+                </body>
             </body>
-            <body name="visual" pos="0 0 0">
-                <geom name="sphere_visual" pos="0 0 0" size="0.025" type="sphere" material="sphere_material" group="1" contype="0" conaffinity="0"/>
-                <site name="bottom_site" pos="0 0 -0.025" size="0.001 0.001 0.001" rgba="0 0 0 0"/>
-                <site name="top_site" pos="0 0 0.025" size="0.001 0.001 0.001" rgba="0 0 0 0"/>
-                <site name="horizontal_radius_site" pos="0.025 0 0" size="0.001 0.001 0.001" rgba="0 0 0 0"/>
-            </body>
+            <site name="bottom_site" pos="0 0 -0.025" size="0.001 0.001 0.001" rgba="0 0 0 0"/>
+            <site name="top_site" pos="0 0 0.025" size="0.001 0.001 0.001" rgba="0 0 0 0"/>
+            <site name="horizontal_radius_site" pos="0.025 0 0" size="0.001 0.001 0.001" rgba="0 0 0 0"/>
         </body>
     </worldbody>
-</mujoco> -->
+</mujoco>-->
