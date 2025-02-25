@@ -321,7 +321,7 @@ class BounceballObject(MujocoXMLObject):
     Ball object that is designed to bounce elastically.
     """
 
-    def __init__(self,name):
+    def __init__(self, name):
         super().__init__(
             xml_path_completion("objects/bounceball.xml"),
             name=name,
@@ -330,13 +330,22 @@ class BounceballObject(MujocoXMLObject):
             duplicate_collision_geoms=True,
         )
 
-        # # Get element tree
-        # tree = self._obj.getroot()
-
-        # # Find and modify the geom
-        # geom = tree.find(".//geom")
-        # geom.set("size", array_to_string(size))
-        # geom.set("density", str(density))
-        # geom.set("friction", array_to_string(friction))
-        # geom.set("solref", array_to_string(solref))
-        # geom.set("rgba", array_to_string(rgba))
+    # def _get_object_subtree(self):
+    #     """
+    #     Return the inner <body name="object"> subtree but also merge in actuators
+    #     from the full MJCF tree to include top-level elements.
+    #     """
+    #     # Get the original subtree that defines the object's body (as per default behavior)
+    #     object_subtree = super()._get_object_subtree()  # typically finds <body name="object">
+        
+    #     # Now fetch the full tree (root) and find any actuator elements
+    #     full_tree = self.tree.getroot()
+    #     actuator_elem = full_tree.find("actuator")
+    #     if actuator_elem is not None:
+    #         # Append a copy of each actuator to the object subtree.
+    #         # (deepcopy ensures the original tree remains unchanged.)
+    #         from copy import deepcopy
+    #         for act in actuator_elem:
+    #             object_subtree.append(deepcopy(act))
+        
+    #     return object_subtree

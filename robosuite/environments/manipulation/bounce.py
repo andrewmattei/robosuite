@@ -103,6 +103,15 @@ class Bounce(ManipulationEnv):
         """
         # For now, return a constant reward of 0 since we're just observing
         return 0.0
+    
+    def step(self, action, ball_action=None):
+        """
+        step with the original step function and the ball_action
+        """
+        ret = super().step(action)
+
+        return ret
+
 
     def _load_model(self):
         """
@@ -156,6 +165,19 @@ class Bounce(ManipulationEnv):
             mujoco_robots=[robot.robot_model for robot in self.robots],
             mujoco_objects=self.ball,
         )
+
+        # --- Manual merge of bounceball actuator ---
+        # Retrieve the bounceball XML MJCF tree
+        # ball_xml = self.ball.get_obj()
+        # actuator_elem = ball_xml.find("actuator")
+        # if actuator_elem is not None:
+        #     # Append each actuator to the world (or the appropriate parent)
+        #     # Here we'll add them as top-level actuators of our overall model.
+        #     for act in actuator_elem:
+        #         self.model.root.append(act)
+
+        print("Model loaded")
+
 
     def _setup_references(self):
         """
@@ -370,13 +392,13 @@ if __name__ == "__main__":
                 # env._apply_gravity_compensation()
 
                 ####Controlling the ball ######
+                # obtaining free_joint_pose
+                free_joint_pose = env.sim.data.get_joint_qpos("bounceball_free_joint")
                 # Apply a force to the ball
                 
                 # Step the simulation
                 # env.sim.step()
                 # mujoco.mj_step(model, data)
-
-
                 env.step(env_action)
 
                 total_force = 0
@@ -398,7 +420,7 @@ if __name__ == "__main__":
                         total_force += normal_force
                 
                 # Record positions, times, and forces
-                ball_body_id = env.sim.model.body_name2id('bounceball_ball')
+                ball_body_id = env.sim.model.body_name2id('bounceball_main')
                 z_positions.append(data.xpos[ball_body_id][2])
                 times.append(data.time)
                 forces.append(total_force)  # This now includes the spike
