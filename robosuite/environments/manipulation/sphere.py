@@ -284,7 +284,7 @@ class TimeKeeper:
 
 if __name__ == "__main__":
 
-    simulation_time = 3.0 # seconds
+    simulation_time = 10.0 # seconds
     env_step_size = 0.0001 # seconds
     horizon = int(simulation_time / env_step_size)
     # Create environment
@@ -414,22 +414,22 @@ if __name__ == "__main__":
                 # if time_keeper.frame_count % 60 == 0:
                 #     print(f"Current FPS: {time_keeper.get_fps():.2f}")
 
-    # Create subplots for force and position
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
+    # # Create subplots for force and position
+    # fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
     
-    # Plot forces
-    ax1.plot(times, forces)
-    ax1.set_xlabel('Time (s)')
-    ax1.set_ylabel('Impact Force (N)')
-    ax1.set_title('Ball-Table Impact Force over Time')
-    ax1.grid(True)
+    # # Plot forces
+    # ax1.plot(times, forces)
+    # ax1.set_xlabel('Time (s)')
+    # ax1.set_ylabel('Impact Force (N)')
+    # ax1.set_title('Ball-Table Impact Force over Time')
+    # ax1.grid(True)
     
-    # Plot z position
-    ax2.plot(times, z_positions)
-    ax2.set_xlabel('Time (s)')
-    ax2.set_ylabel('Z Position (m)')
-    ax2.set_title('Ball Z Position over Time')
-    ax2.grid(True)
+    # # Plot z position
+    # ax2.plot(times, z_positions)
+    # ax2.set_xlabel('Time (s)')
+    # ax2.set_ylabel('Z Position (m)')
+    # ax2.set_title('Ball Z Position over Time')
+    # ax2.grid(True)
     
-    plt.tight_layout()
-    plt.show()
+    # plt.tight_layout()
+    # plt.show()

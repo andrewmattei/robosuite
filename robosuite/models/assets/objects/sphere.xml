@@ -1,14 +1,14 @@
 <mujoco model="sphere">
     <asset>
-        <texture type="skybox" builtin="gradient" rgb1="1 1 1" rgb2="1 1 1" width="32" height="32"/>
-        <material name="sphere_material" specular="1" shininess="0.5" rgba="0.1 0.1 0.9 1"/>
+        <texture type="skybox" builtin="flat" rgb1="1 1 1" rgb2="1 1 1" width="32" height="32" opacity="0.1"/>
+        <material name="sphere_material" rgba="1 0 0 0.5"/>
     </asset>
     <worldbody>
         <body>
             <body name="object">
-                <joint name="free" type="free"/>
-                <inertial mass="0.05" pos="0 0 0" diaginertia="1e-3 1e-3 1e-3"/>
-                <geom type="sphere" size="0.025" material="sphere_material" group="0"/>
+                <joint name="fixed" type="free"/>
+                <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                <geom type="sphere" size="0.25" material="sphere_material" group="0"/>
             </body>
             <!-- Sites for object grasping -->
             <site name="bottom_site" pos="0 0 -0.025" size="0.001 0.001 0.001" rgba="0 0 0 0"/>
@@ -20,23 +20,19 @@
 
 <!-- <mujoco model="sphere">
     <asset>
-        <material name="sphere_material" specular="1" shininess="0.5" rgba="0.1 0.1 0.9 1"/>
+        <texture type="skybox" builtin="gradient" rgb1="1 1 1" rgb2="1 1 1" width="32" height="32"/>
+        <material name="sphere_material" specular="1" shininess="0.5" rgba="0.1 0.1 0.1 0.0"/>
     </asset>
-
     <worldbody>
         <body>
-            <geom name="sphere" type="sphere" size="0.025" mass="0.05"/>
             <body name="object">
-                <body name="collision" pos="0 0 0" quat="0.707107 0 0 0.707107">
-                    <geom name="sphere_collision" pos="0 0 0" size="0.025" type="sphere" material="sphere_material" group="0"/>
-                    <joint name="ball_z" type="slide" axis="0 0 1" limited="false"/>
-                    <inertial mass="0.05" pos="0 0 0" diaginertia="1e-3 1e-3 1e-3"/>
-                    <geom pos="0 0 0" type="sphere" size="0.025" group="0" solref="0.01 0.1" condim="4" priority="1"/>
-                </body>
+                <joint name="free" type="free"/>
+                <inertial mass="0.05" pos="0 0 0" diaginertia="1e-3 1e-3 1e-3"/>
+                <geom type="sphere" size="0.025" material="sphere_material" group="0"/>
             </body>
             <site name="bottom_site" pos="0 0 -0.025" size="0.001 0.001 0.001" rgba="0 0 0 0"/>
             <site name="top_site" pos="0 0 0.025" size="0.001 0.001 0.001" rgba="0 0 0 0"/>
             <site name="horizontal_radius_site" pos="0.025 0 0" size="0.001 0.001 0.001" rgba="0 0 0 0"/>
         </body>
     </worldbody>
-</mujoco>-->
+</mujoco> -->
