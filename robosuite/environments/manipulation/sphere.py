@@ -13,6 +13,7 @@ from robosuite.utils.transform_utils import convert_quat
 from robosuite.controllers import load_part_controller_config
 # control_config = load_part_controller_config(default_controller="JOINT_POSITION") # this doesn't even work...
 from robosuite.controllers import load_composite_controller_config
+from robosuite.kinematics.pinocchio_ik import compute_ik
 
 import mujoco
 import time
@@ -227,8 +228,9 @@ class Sphere(ManipulationEnv):
 
             # Loop through all objects and reset their positions
             for obj_pos, obj_quat, obj in object_placements.values():
-                obj_pos = np.array([0,0,obj_pos[2]]) # remove the randomness in x,y of the ball
-                obj_quat = np.array([1,0,0,0]) # remove the randomness in the orientation of the ball
+                # new_pos = np.array([0.1, 1.0, 1.0])
+                # new_quat = np.array([1, 0, 0, 0])  # Keep fixed orientation
+                # self.sim.data.set_joint_qpos(obj.joints[0], np.concatenate([new_pos, new_quat]))
                 self.sim.data.set_joint_qpos(obj.joints[0], np.concatenate([np.array(obj_pos), np.array(obj_quat)]))
 
         super()._reset_internal()
@@ -258,6 +260,55 @@ class Sphere(ManipulationEnv):
             
             control_indices = robot._ref_arm_joint_actuator_indexes
             self.sim.data.ctrl[control_indices] = gravity_compensation
+
+    def _jog_robot_to_pose(self, desired_arm_pos, desired_torso_height=0.342):
+        """
+        Jog the robot to a desired arm position and torso height.
+        """
+        active_robot = self.robots[0]
+
+        # Preparing Input for the default_dual_kinova3 controller (HybridMobileBase)
+        action_dict = {}
+        for arm in active_robot.arms:
+            # got the following syntex from demo_sensor_corruption.py
+            if arm == "right":
+                action_dict[arm] = desired_arm_pos[:7]
+            if arm == "left":
+                action_dict[arm] = desired_arm_pos[7:]
+            action_dict[f"{arm}_gripper"] = np.zeros(active_robot.gripper[arm].dof)
+
+        action_dict["torso"] = np.array([desired_torso_height,])
+        action_dict["base"] = np.array([0.0, 0.0, 0.0])
+
+        env_action = active_robot.create_action_vector(action_dict)
+        return env_action
+
+    def _jog_left_arm_to_sphere_tangent(self, sphere_center, sphere_radius):
+        # Compute the left-most point (assuming positive x is right)
+        target_pos = sphere_center + np.array([-sphere_radius, 0, 0])
+        # Define a desired tangent orientation.
+        # Here, we form a desired 4x4 homogeneous transformation.
+        # (You should replace with the specific orientation your task requires.)
+        R_desired = np.eye(3)  # placeholder: identity rotation
+        T_target = np.eye(4)
+        T_target[:3, :3] = R_desired
+        T_target[:3, 3] = target_pos
+        
+        # Path to the robot's URDF (update with your actual URDF file)
+        urdf_path = "robosuite/models/assets/robots/dual_kinova3/leonardo.urdf"
+        # Name of the left end-effector frame (adjust as needed)
+        left_ee = "tool_frame"
+        # Initial configuration for the left arm (using full robot qpos; adjust joint indices)
+        q0 = self.robots[0].init_qpos.copy()
+        
+        # Compute IK for the left arm using Pinocchio.
+        q_sol = compute_ik(urdf_path, left_ee, T_target, q0[0:7])
+        
+        desired_arm_pos = q0.copy()
+        # Assuming left arm joints are indexed from 7 to 14.
+        desired_arm_pos[7:14] = q_sol
+        
+        return self._jog_robot_to_pose(desired_arm_pos)
             
 class TimeKeeper:
     def __init__(self, desired_freq=60):
@@ -376,6 +427,12 @@ if __name__ == "__main__":
                 # env.sim.step()
                 # mujoco.mj_step(model, data)
 
+                # # jog both arm to zero configuration 
+                # zeros_config = np.zeros(14)
+                # env_action = env._jog_robot_to_pose(zeros_config, desired_torso_height)
+                sphere_center = data.xpos[env.sim.model.body_name2id('sphere_main')]
+                sphere_radius = 0.05
+                env_action = env._jog_left_arm_to_sphere_tangent(sphere_center, sphere_radius)
 
                 env.step(env_action)
 
