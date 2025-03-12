@@ -1,4 +1,4 @@
-"""Teleoperate robot with keyboard or SpaceMouse.
+"""Teleoperate robot with any device, including Quest 3.
 
 ***Choose user input option with the --device argument***
 
@@ -117,7 +117,7 @@ if __name__ == "__main__":
         default=None,
         help="Choice of controller. Can be generic (eg. 'BASIC' or 'WHOLE_BODY_MINK_IK') or json file (see robosuite/controllers/config for examples) or None to get the robot's default controller if it exists",
     )
-    parser.add_argument("--device", type=str, default="keyboard")
+    parser.add_argument("--device", type=str, default="quest")
     parser.add_argument("--pos-sensitivity", type=float, default=1.0, help="How much to scale position user inputs")
     parser.add_argument("--rot-sensitivity", type=float, default=1.0, help="How much to scale rotation user inputs")
     parser.add_argument(
@@ -150,9 +150,9 @@ if __name__ == "__main__":
     # Create environment
     env = suite.make(
         **config,
-        has_renderer=True,
+        has_renderer=False,
         has_offscreen_renderer=False,
-        render_camera="frontview",
+        render_camera="agentview",
         ignore_done=True,
         use_camera_obs=False,
         reward_shaping=True,
@@ -185,7 +185,7 @@ if __name__ == "__main__":
 
         device = Quest(env=env,debug=True)
     else:
-        raise Exception("Invalid device choice: choose either 'keyboard' or 'spacemouse'.")
+        raise Exception("Invalid device choice: choose either 'keyboard', 'spacemouse', or 'quest'.")
 
     while True:
         # Reset the environment
@@ -194,7 +194,6 @@ if __name__ == "__main__":
         # Setup rendering
         cam_id = 0
         num_cam = len(env.sim.model.camera_names)
-        env.render()
 
         # Initialize variables that should the maintained between resets
         last_grasp = 0
@@ -210,50 +209,65 @@ if __name__ == "__main__":
             for robot in env.robots
         ]
 
-        while True:
-            start = time.time()
+        # # Loop until we get a reset from the input or the task completes?
+        model = env.sim.model._model
+        data = env.sim.data._data
 
-            # Set active robot
-            active_robot = env.robots[device.active_robot]
+        with mujoco.viewer.launch_passive(model, data) as viewer:
+            # Set initial camera parameters
+            viewer.cam.distance = 3.0
+            viewer.cam.azimuth = 120
+            viewer.cam.elevation = -45
+            viewer.cam.lookat[:] = np.array([0.0, -0.25, 0.824])
 
-            # Get the newest action
-            input_ac_dict = device.input2action()
-            # this sends our actions to the sim using the dictionary returned by input2action
+            while viewer.is_running() and not env.done:
+                start = time.time()
 
-            # If action is none, then this a reset so we should break
-            if input_ac_dict is None:
-                break
+                # Set active robot
+                active_robot = env.robots[device.active_robot]
 
-            from copy import deepcopy
+                # Get the newest action
+                input_ac_dict = device.input2action()
+                # this sends our actions to the sim using the dictionary returned by input2action
 
-            action_dict = deepcopy(input_ac_dict)  # {}
-            # set arm actions
-            for arm in active_robot.arms:
-                if isinstance(active_robot.composite_controller, WholeBody):  # input type passed to joint_action_policy
-                    controller_input_type = active_robot.composite_controller.joint_action_policy.input_type
-                else:
-                    controller_input_type = active_robot.part_controllers[arm].input_type
+                # If action is none, then this a reset so we should break
+                if input_ac_dict is None:
+                    break
 
-                if controller_input_type == "delta":
-                    action_dict[arm] = input_ac_dict[f"{arm}_delta"]
-                elif controller_input_type == "absolute":
-                    action_dict[arm] = input_ac_dict[f"{arm}_abs"]
-                else:
-                    raise ValueError
+                from copy import deepcopy
 
-            # Maintain gripper state for each robot but only update the active robot with action
-            env_action = [robot.create_action_vector(all_prev_gripper_actions[i]) for i, robot in enumerate(env.robots)]
-            env_action[device.active_robot] = active_robot.create_action_vector(action_dict)
-            env_action = np.concatenate(env_action)
-            for gripper_ac in all_prev_gripper_actions[device.active_robot]:
-                all_prev_gripper_actions[device.active_robot][gripper_ac] = action_dict[gripper_ac]
+                action_dict = deepcopy(input_ac_dict)  # {}
+                # set arm actions
+                for arm in active_robot.arms:
+                    if isinstance(active_robot.composite_controller, WholeBody):  # input type passed to joint_action_policy
+                        controller_input_type = active_robot.composite_controller.joint_action_policy.input_type
+                    else:
+                        controller_input_type = active_robot.part_controllers[arm].input_type
 
-            env.step(env_action)
-            env.render()
+                    if controller_input_type == "delta":
+                        action_dict[arm] = input_ac_dict[f"{arm}_delta"]
+                    elif controller_input_type == "absolute":
+                        action_dict[arm] = input_ac_dict[f"{arm}_abs"]
+                    else:
+                        raise ValueError
 
-            # limit frame rate if necessary
-            if args.max_fr is not None:
-                elapsed = time.time() - start
-                diff = 1 / args.max_fr - elapsed
-                if diff > 0:
-                    time.sleep(diff)
+                # Maintain gripper state for each robot but only update the active robot with action
+                env_action = [robot.create_action_vector(all_prev_gripper_actions[i]) for i, robot in enumerate(env.robots)]
+                env_action[device.active_robot] = active_robot.create_action_vector(action_dict)
+                env_action = np.concatenate(env_action)
+                for gripper_ac in all_prev_gripper_actions[device.active_robot]:
+                    all_prev_gripper_actions[device.active_robot][gripper_ac] = action_dict[gripper_ac]
+
+                env.step(env_action)
+
+                with viewer.lock():
+                    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
+
+                viewer.sync()
+
+                # limit frame rate if necessary
+                if args.max_fr is not None:
+                    elapsed = time.time() - start
+                    diff = 1 / args.max_fr - elapsed
+                    if diff > 0:
+                        time.sleep(diff)
