@@ -143,12 +143,12 @@ class Sphere(ManipulationEnv):
                 name="ObjectSampler",
                 mujoco_objects=self.ball,
                 x_range=[-0.03, 0.03],
-                y_range=[-0.03, 0.03],
+                y_range=[0.19, 0.21],
                 rotation=None,
                 ensure_object_boundary_in_range=False,
                 ensure_valid_placement=True,
                 reference_pos=self.table_offset,
-                z_offset=1.0,  # 1 meter above the table
+                z_offset=0.1,  # 1 meter above the table
             )
 
         # task includes arena, robot, and objects of interest
@@ -302,7 +302,7 @@ class Sphere(ManipulationEnv):
         q0 = self.robots[0].init_qpos.copy()
         
         # Compute IK for the left arm using Pinocchio.
-        q_sol = compute_ik(urdf_path, left_ee, T_target, q0[0:7])
+        q_sol = compute_ik(urdf_path, left_ee, T_target, q0[7:14])
         
         desired_arm_pos = q0.copy()
         # Assuming left arm joints are indexed from 7 to 14.
@@ -363,7 +363,7 @@ if __name__ == "__main__":
     # left_arm_joints = env.sim.data.qpos[active_robot._ref_arm_joint_pos_indexes[7:]]   # Next 7 joints for left arm
     
     desired_arm_positions = active_robot.init_qpos
-
+    # desired_arm_positions[7:14] = [1.5707963267948966, -1.5707963267948966, 1.5707963267948966, -1.5707963267948966, 0.0, -0.5235987755982988, -1.5707963267948966]
     desired_torso_height = env.init_torso_height
 
     # Preparing Input for the default_dual_kinova3 controller (HybridMobileBase)
@@ -430,6 +430,7 @@ if __name__ == "__main__":
                 # # jog both arm to zero configuration 
                 # zeros_config = np.zeros(14)
                 # env_action = env._jog_robot_to_pose(zeros_config, desired_torso_height)
+                
                 sphere_center = data.xpos[env.sim.model.body_name2id('sphere_main')]
                 sphere_radius = 0.05
                 env_action = env._jog_left_arm_to_sphere_tangent(sphere_center, sphere_radius)
