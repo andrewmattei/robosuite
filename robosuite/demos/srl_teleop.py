@@ -190,6 +190,7 @@ if __name__ == "__main__":
     while True:
         # Reset the environment
         obs = env.reset()
+        print("Environment reset!")
 
         # Setup rendering
         cam_id = 0
