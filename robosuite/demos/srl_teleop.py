@@ -103,8 +103,8 @@ import mujoco
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--environment", type=str, default="Lift")
-    parser.add_argument("--robots", nargs="+", type=str, default="Panda", help="Which robot(s) to use in the env")
+    parser.add_argument("--environment", type=str, default="TwoArmLift")
+    parser.add_argument("--robots", nargs="+", type=str, default="Baxter", help="Which robot(s) to use in the env")
     parser.add_argument(
         "--config", type=str, default="default", help="Specified environment configuration if necessary"
     )

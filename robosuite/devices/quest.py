@@ -7,6 +7,7 @@ from robosuite.devices import *
 from robosuite.models.robots import *
 from robosuite.robots import *
 from robosuite.wrappers import DataCollectionWrapper, VisualizationWrapper
+from pynput.keyboard import Controller, Key, Listener
 import robosuite.utils.transform_utils as T
 import robosuite.utils.tool_box_no_ros as tb
 
@@ -37,23 +38,29 @@ class Quest(Device):
     def __init__(
             self,
             env=None,
-            robot_type="franka",
-            bimanual=False,
             debug=False,
         ):
         super().__init__(env)
-
+        
+        # Check robot models and see if there are multiple arms
         self.robot_interface = env
-        self.robot_type = robot_type
-        self.bimanual = bimanual
+        self.robot_models = []
+        self.bimanual = False
 
+        for robot in self.robot_interface.robots:
+            self.robot_models.append(robot.robot_model.name)
+            if robot.robot_model.arm_type == 'bimanual':
+                self.bimanual = True
+        print("Robot models:", self.robot_models)
+
+        # Setup
         self.oculus_reader = OculusReader()
 
         self.controller_state_lock = threading.Lock() # lock to ensure safe access
         self.controller_state = None
         self._reset_state = 0
 
-        self._controller_names = ["LeftController", "RightController"] # NOTE if there is one robot, it will use the "l" controller
+        self._controller_names = ["LeftController", "RightController"]
         self._arm2controller = {
             "left": "LeftController",
             "right": "RightController",
@@ -87,18 +94,13 @@ class Quest(Device):
         # self.last_pos = None
 
         # controller initial poses
-        self.controller_init_pos = dict([(name, np.zeros(3)) for name in self._controller_names])
-        self.controller_init_rot = dict([(name, np.zeros((3, 3))) for name in self._controller_names])
-        self.controller_init_rpy = dict([(name, np.zeros(3)) for name in self._controller_names])
+        self.quest_init_pos = dict([(name, np.zeros(3)) for name in self._controller_names])
+        self.quest_init_rot = dict([(name, np.zeros((3, 3))) for name in self._controller_names])
+        self.quest_init_rpy = dict([(name, np.zeros(3)) for name in self._controller_names])
 
         self.ee_init_pos = dict([(name, np.zeros(3)) for name in self._controller_names])
         self.ee_init_rot = dict([(name, np.zeros((3, 3))) for name in self._controller_names])
         self.ee_init_rpy = dict([(name, np.zeros(3)) for name in self._controller_names])
-
-        # # command poses
-        # self.target_ori = self.ee_init_rot
-        # self.target_pos = self.ee_init_pos
-        # self.target_pose = (self.target_pos.tolist(), self.target_ori.tolist())
 
         # Golden offset for Grey Robot with Quest 3 # TODO(VS) why?
         self.R_rs_questwd = np.array([
@@ -114,6 +116,12 @@ class Quest(Device):
 
         self._display_controls()
         self._reset_internal_state()
+
+        # # make a thread to listen to keyboard and register our callback functions
+        # self.listener = Listener(on_press=self.on_press, on_release=self.on_release)
+
+        # # start listening
+        # self.listener.start()
 
     @staticmethod
     def _display_controls():
@@ -200,6 +208,13 @@ class Quest(Device):
                         # trigger was just pressed, (re)initialize pose
                         self.initialize_pose = True
                     self.trigger_pressed[controller] = True
+                    arm_to_move = controller
+                    if arm_to_move != self._arm2controller[self.active_arm] and self.bimanual:
+                        self.active_arm_index = (self.active_arm_index + 1) % len(self.all_robot_arms[self.active_robot])
+                    elif arm_to_move != self._arm2controller[self.active_arm]:
+                        print(f"WARNING: Not yet able to handle multiple robots.")
+                    if self.debug:
+                        print(f"DEBUG get_controller_state(): active arm: {self.active_arm}")
                 else:
                     self.trigger_pressed[controller] = False
                     # self.pos_delta = [0, 0, 0]
@@ -212,7 +227,6 @@ class Quest(Device):
                             # print(f"DEBUG get_controller_state(): grasp_state: {self.grasp_states[self.active_robot][self.active_arm_index]}")
                             # print(controller_state[self._button_names[controller]["grip_val"]])
                         self.grasp_states[self.active_robot][self.active_arm_index] = not self.grasp_states[self.active_robot][self.active_arm_index] 
-                        # self.hand_grasp = controller_state[self._button_names[controller]["grip_val"]]
 
                 if controller_state[self._button_names[controller]["reset_bool"]]:
                     self._reset_state = 1
@@ -235,39 +249,34 @@ class Quest(Device):
                 #     print("DEBUG: RThU")
 
                 if self.trigger_pressed[controller]: # Teleop only works if the trigger is pressed
-                    controller_curr_pos = np.array([controller_state["Position"]["x"], controller_state["Position"]["z"], -controller_state["Position"]["y"]]) 
-                    controller_curr_rot = np.array([controller_state["Rotation"]["x"], controller_state["Rotation"]["y"], controller_state["Rotation"]["z"], controller_state["Rotation"]["w"]])
-                    controller_curr_rot = T.quat2mat(controller_curr_rot)
-                    controller_curr_rpy = T.mat2euler(controller_curr_rot)
+                    quest_curr_pos = np.array([controller_state["Position"]["x"], controller_state["Position"]["z"], -controller_state["Position"]["y"]]) 
+                    quest_curr_rot = np.array([controller_state["Rotation"]["x"], controller_state["Rotation"]["y"], controller_state["Rotation"]["z"], controller_state["Rotation"]["w"]])
+                    quest_curr_rot = T.quat2mat(quest_curr_rot)
+                    quest_curr_rpy = T.mat2euler(quest_curr_rot)
 
-                    # drift issue:
-                    # how to convert rotation of joystick into the arm's worldframe?
                     robosuite_controller = robot.part_controllers[self.active_arm]
 
                     ee_current_pos = self.robot_interface.robots[0].recent_ee_pose[self.active_arm].last
-                    # ee_current_quat = np.array([ee_current_pos[4], ee_current_pos[5], ee_current_pos[6], ee_current_pos[3]])
                     ee_curr_posit = np.array([ee_current_pos[0], ee_current_pos[1], ee_current_pos[2]])
                     ee_curr_rot = robosuite_controller.ref_ori_mat.copy()
-                    # ee_curr_rpy = T.mat2euler(ee_curr_rot)
 
                     if self.initialize_pose:
                         # once trigger is (re)pressed, rebase controller's initial pose to current pose, and compute deltas using it
-                        self.controller_init_pos[controller] = controller_curr_pos
-                        self.controller_init_rot[controller] = controller_curr_rot
-                        self.controller_init_rpy[controller] = controller_curr_rpy
+                        self.quest_init_pos[controller] = quest_curr_pos
+                        self.quest_init_rot[controller] = quest_curr_rot
+                        self.quest_init_rpy[controller] = quest_curr_rpy
 
                         self.ee_init_pos[controller] = ee_curr_posit
                         self.ee_init_rot[controller] = ee_curr_rot.copy()
-                        # self.ee_init_rpy[controller] = ee_curr_rpy
                         if self.debug:
                             print("initialized pose")
                         self.initialize_pose = False
 
                     # Computing absolute action for the robot (in the robot's frame).
 
-                    # r_controller_curr_from_init_rs = R_robosuit_from_quest @ r_controller_curr_from_init_quest
-                    d_hand_posit = controller_curr_pos - self.controller_init_pos[controller] # difference in current hand position from previous
-                    dR_controller = self.controller_init_rot[controller] @ controller_curr_rot.T
+                    # r_quest_curr_from_init_rs = R_robosuit_from_quest @ r_quest_curr_from_init_quest
+                    d_hand_posit = quest_curr_pos - self.quest_init_pos[controller] # difference in current hand position from previous
+                    dR_controller = self.quest_init_rot[controller] @ quest_curr_rot.T
                     dR_controller_rs = self.R_rs_questRctrl @ dR_controller @ self.R_rs_questRctrl.T
                     dR_ee_rs = self.ee_init_rot[controller] @ ee_curr_rot.T
                     
@@ -286,35 +295,16 @@ class Quest(Device):
                     k, theta = tb.R2rot(dR_ee_rs)
                     k = np.array(k)
                     eR2_ee = -np.sin(theta/2)*k
-                    # eR2_controller = self.R_rs_questRctrl @ eR2_controller 
-                    # delta_rpy = eR2 
-                    # d_hand_rpy = eR2
 
-                    # d_hand_rpy[abs(d_hand_rpy) < np.pi/36] = 0.0
-                    # d_hand_posit[abs(d_hand_posit) < 0.01] = 0.0
-
-                    # d_hand_rpy = d_hand_rpy/10
                     if self.debug:
                         print("Initials")
-                        print(f"DEBUG get_controller_state(): d_hand_pos vs controller_init_pos: {d_hand_posit} {self.controller_init_pos[controller]}")
+                        print(f"DEBUG get_controller_state(): d_hand_pos vs quest_init_pos: {d_hand_posit} {self.quest_init_pos[controller]}")
                         # print(f"DEBUG get_controller_state(): d_hand_rpy: {d_hand_rpy}")
                         print(f"DEBUG get_controller_state(): eR2 vs eR2_controller vs eR2_ee: \n{eR2} \n{eR2_controller} \n {eR2_ee}")
-                        # print(f"DEBUG get_controller_state(): controller_curr_rpy vs controller_init_rpy: {controller_curr_rpy} {self.controller_init_rpy[controller]}")
+                        # print(f"DEBUG get_controller_state(): quest_curr_rpy vs quest_init_rpy: {quest_curr_rpy} {self.quest_init_rpy[controller]}")
                     d_hand_rs_frame = self.R_rs_questwd @ d_hand_posit # I would hope that this turns it from the quest's frame to the robot's frame?
-                    # d_hand_rot_rs_frame = self.R_rs_questwd @ ER_controller
 
                     target_posit = self.ee_init_pos[controller] + d_hand_rs_frame # desired change in position from the robot's initial position
-                    # target_rot = self.ee_init_rot[controller] @ d_hand_rot_rs_frame  # desired change in orientation from the robot's initial orientation
-                    # target_rpy = self.ee_init_rpy[controller] - d_hand_rpy
-
-                    # target_rpy[target_rpy > 2 * np.pi] -= 2 * np.pi
-                    # target_rpy[target_rpy < -2 * np.pi] += 2 * np.pi
-
-                    # ER_EE_rot = ee_curr_rot @ self.ee_init_rot[controller].T
-                    # k_ee, theta_ee = tb.R2rot(ER_EE_rot)
-                    # k_ee = np.array(k_ee)
-                    # eR2_ee = -np.sin(theta_ee/2)*k_ee
-                    # d_ee_rpy = eR2_ee
 
                     if self.debug:
                         print("Targets")
@@ -324,17 +314,6 @@ class Quest(Device):
 
                     # Computing delta action for the robot.
                     delta_pos = target_posit - ee_curr_posit # delta between desired EE pose and current EE pose
-                    # delta_rpy = ee_curr_rpy - target_rpy # delta between desired EE orientation and current EE orientation
-                    # delta_rot = ee_curr_rot @ target_rot.T
-                    # k_ee, theta_ee = tb.R2rot(delta_rot)
-                    # k_ee = np.array(k_ee)
-                    # eR2_ee = -np.sin(theta_ee/2)*k_ee
-                    # d_ee_w = eR2_ee
-
-                    # delta_rpy[delta_rpy > 2 * np.pi] -= 2 * np.pi
-                    # delta_rpy[delta_rpy < -2 * np.pi] += 2 * np.pi
-
-                    # delta_rpy = -delta_rpy
 
                     if self.debug:
                         print("Deltas")
@@ -352,15 +331,10 @@ class Quest(Device):
                         reset=self._reset_state,
                         base_mode=int(self.base_mode),
                     )
-                    # self.controller_init_rot[controller] = controller_curr_rot
+                    # self.quest_init_rot[controller] = quest_curr_rot
                     # self.ee_init_rot[controller] = ee_curr_rpy
                 else:
                     self.engaged = False # TODO maybe remove, not useful
-                    # new_controller_state[controller]['engaged'] = self.engaged # TODO maybe remove, not useful
-
-                    # self.ee_init_pos[controller] = self.robot_interface.robots[0]._hand_pos[self.active_arm]
-                    # self.ee_init_rot[controller] = self.robot_interface.robots[0]._hand_pose[self.active_arm][:3, :3]
-                    # self.ee_init_rpy[controller] = T.mat2euler(self.ee_init_rot[controller])
                     current_pos = self.robot_interface.robots[0].recent_ee_pose[self.active_arm].last
                     current_quat = np.array([current_pos[4], current_pos[5], current_pos[6], current_pos[3]])
                     self.ee_init_pos[controller] = np.array([current_pos[0], current_pos[1], current_pos[2]])
@@ -547,3 +521,39 @@ class Quest(Device):
             [-1, 0, 0],
             [0, 0, 1]
         ])
+
+    ### Keyboard callback functions
+    # Probably dont work cause the thread is locked.
+    # Might want to find a way to fix this.
+
+    # def on_press(self, key):
+    #     """
+    #     Key handler for key presses.
+    #     Args:
+    #         key (str): key that was pressed
+    #     """
+
+    #     try:
+    #         if key.char == 'r':
+    #             # if self.debug:
+    #             #     print("DEBUG: keyboard test!")
+    #             pass
+    #     except AttributeError as e:
+    #         pass
+
+    # def on_release(self, key):
+    #     """
+    #     Key handler for key releases.
+    #     Args:
+    #         key (str): key that was pressed
+    #     """
+
+    #     try:
+    #         if key.char == "q":
+    #             self._reset_state = 1
+    #             self._enabled = False
+    #             self._reset_internal_state()
+    #     except AttributeError as e:
+    #         pass
+
+    
