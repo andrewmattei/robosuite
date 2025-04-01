@@ -109,7 +109,7 @@ from robosuite.wrappers import VisualizationWrapper
 from kortex_api.autogen.client_stubs.BaseClientRpc import BaseClient
 from kortex_api.autogen.client_stubs.BaseCyclicClientRpc import BaseCyclicClient
 
-from kortex_api.autogen.messages import Base_pb2, BaseCyclic_pb2, Common_pb2
+from kortex_api.autogen.messages import Base_pb2
 import robosuite.utils.tool_box_no_ros as tb
 import robosuite.utils.kortex_utilities as ku
 
@@ -136,6 +136,62 @@ class TimeKeeper:
     def get_fps(self):
         elapsed = time.perf_counter() - self.start_time
         return self.frame_count / elapsed if elapsed > 0 else 0
+    
+
+def sync_joint_pos_with_kortex(env, left_base, left_base_cyclic, right_base, right_base_cyclic):
+    ## Retrieve the simulation robot states
+    active_robot = env.robots[0]
+    sim_q = env.sim.data.qpos  # simulation’s full joint state vector
+    sim_qd = env.sim.data.qvel
+    kp = 1.0
+    left_qd_cmd = None
+    right_qd_cmd = None
+
+    #### Get simulation joint positions for left arm ####
+    # It is assumed that _ref_arm_joint_pos_indexes contains 14 indices (7 for right, 7 for left)
+    
+    left_indices  = active_robot._ref_arm_joint_pos_indexes[7:]
+    sim_left_q  = sim_q[left_indices]
+    sim_left_qd = sim_qd[left_indices]
+
+    ## Retrive the hardware robot states
+    left_base_feedback = left_base_cyclic.RefreshFeedback()
+    real_left_q, real_left_qd = tb.get_realtime_q_qdot(left_base_feedback)
+
+    ## compute joint velocity control error
+    left_qd_cmd = np.degrees(sim_left_qd + kp*(sim_left_q - real_left_q)) # kinova uses degress/sec
+    left_joint_speeds = Base_pb2.JointSpeeds()
+
+
+    #### Get simulation joint positions for right arm ####
+    right_indices = active_robot._ref_arm_joint_pos_indexes[:7]
+    sim_right_q = sim_q[right_indices]
+    sim_right_qd = sim_qd[right_indices]
+
+    ## Retrive the hardware robot states
+    right_base_feedback = right_base_cyclic.RefreshFeedback()
+    real_right_q, real_right_qd = tb.get_realtime_q_qdot(right_base_feedback)
+
+    ## compute joint velocity control error
+    right_qd_cmd = np.degrees(sim_right_qd + kp*(sim_right_q - real_right_q))
+    right_joint_speeds = Base_pb2.JointSpeeds()
+
+    #### Populate and send joint speed command ####
+    for joint_id in range(7):
+        left_js = left_joint_speeds.joint_speeds.add()
+        left_js.joint_identifier = joint_id 
+        left_js.value = left_qd_cmd[joint_id]
+        left_js.duration = 0
+
+        right_js = right_joint_speeds.joint_speeds.add()
+        right_js.joint_identifier = joint_id 
+        right_js.value = right_qd_cmd[joint_id]
+        right_js.duration = 0
+
+    left_base.SendJointSpeedsCommand(left_joint_speeds)
+    right_base.SendJointSpeedsCommand(right_joint_speeds)
+
+
 
 if __name__ == "__main__":
 
@@ -240,77 +296,83 @@ if __name__ == "__main__":
         left_base_cyclic = BaseCyclicClient(left_arm_conn)
         right_base_cyclic = BaseCyclicClient(right_arm_conn)
 
-
-        while True:
-            # Reset the environment
-            obs = env.reset()
-
-            # reset the robot arm pose to home
-            results = tb.home_both_arms(left_base, right_base, "Home")
-
-            # Setup rendering
-            cam_id = 0
-            num_cam = len(env.sim.model.camera_names)
-            env.render()
-
-            # Initialize variables that should the maintained between resets
-            last_grasp = 0
-
-            # Initialize device control
-            device.start_control()
-            all_prev_gripper_actions = [
-                {
-                    f"{robot_arm}_gripper": np.repeat([0], robot.gripper[robot_arm].dof)
-                    for robot_arm in robot.arms
-                    if robot.gripper[robot_arm].dof > 0
-                }
-                for robot in env.robots
-            ]
-
+        try:
             while True:
-                start = time.time()
+                # Reset the environment
+                obs = env.reset()
 
-                # Set active robot
-                active_robot = env.robots[device.active_robot]
+                # reset the robot arm pose to home
+                results = tb.home_both_arms(left_base, right_base, "Home")
 
-                # Get the newest action
-                input_ac_dict = device.input2action()
-                # this sends our actions to the sim using the dictionary returned by input2action
-
-                # If action is none, then this a reset so we should break
-                if input_ac_dict is None:
-                    break
-
-                from copy import deepcopy
-
-                action_dict = deepcopy(input_ac_dict)  # {}
-                # set arm actions
-                for arm in active_robot.arms:
-                    if isinstance(active_robot.composite_controller, WholeBody):  # input type passed to joint_action_policy
-                        controller_input_type = active_robot.composite_controller.joint_action_policy.input_type
-                    else:
-                        controller_input_type = active_robot.part_controllers[arm].input_type
-
-                    if controller_input_type == "delta":
-                        action_dict[arm] = input_ac_dict[f"{arm}_delta"]
-                    elif controller_input_type == "absolute":
-                        action_dict[arm] = input_ac_dict[f"{arm}_abs"]
-                    else:
-                        raise ValueError
-
-                # Maintain gripper state for each robot but only update the active robot with action
-                env_action = [robot.create_action_vector(all_prev_gripper_actions[i]) for i, robot in enumerate(env.robots)]
-                env_action[device.active_robot] = active_robot.create_action_vector(action_dict)
-                env_action = np.concatenate(env_action)
-                for gripper_ac in all_prev_gripper_actions[device.active_robot]:
-                    all_prev_gripper_actions[device.active_robot][gripper_ac] = action_dict[gripper_ac]
-
-                env.step(env_action)
+                # Setup rendering
+                cam_id = 0
+                num_cam = len(env.sim.model.camera_names)
                 env.render()
 
-                # limit frame rate if necessary
-                if args.max_fr is not None:
-                    elapsed = time.time() - start
-                    diff = 1 / args.max_fr - elapsed
-                    if diff > 0:
-                        time.sleep(diff)
+                # Initialize variables that should be maintained between resets
+                last_grasp = 0
+
+                # Initialize device control
+                device.start_control()
+                all_prev_gripper_actions = [
+                    {
+                        f"{robot_arm}_gripper": np.repeat([0], robot.gripper[robot_arm].dof)
+                        for robot_arm in robot.arms
+                        if robot.gripper[robot_arm].dof > 0
+                    }
+                    for robot in env.robots
+                ]
+
+                while True:
+                    start = time.time()
+
+                    # Set active robot
+                    active_robot = env.robots[device.active_robot]
+
+                    # Get the newest action
+                    input_ac_dict = device.input2action()
+                    # this sends our actions to the sim using the dictionary returned by input2action
+
+                    # If action is none, then this a reset so we should break
+                    if input_ac_dict is None:
+                        break
+
+                    from copy import deepcopy
+
+                    action_dict = deepcopy(input_ac_dict)  # {}
+                    # set arm actions
+                    for arm in active_robot.arms:
+                        if isinstance(active_robot.composite_controller, WholeBody):  # input type passed to joint_action_policy
+                            controller_input_type = active_robot.composite_controller.joint_action_policy.input_type
+                        else:
+                            controller_input_type = active_robot.part_controllers[arm].input_type
+
+                        if controller_input_type == "delta":
+                            action_dict[arm] = input_ac_dict[f"{arm}_delta"]
+                        elif controller_input_type == "absolute":
+                            action_dict[arm] = input_ac_dict[f"{arm}_abs"]
+                        else:
+                            raise ValueError
+
+                    # Maintain gripper state for each robot but only update the active robot with action
+                    env_action = [robot.create_action_vector(all_prev_gripper_actions[i]) for i, robot in enumerate(env.robots)]
+                    env_action[device.active_robot] = active_robot.create_action_vector(action_dict)
+                    env_action = np.concatenate(env_action)
+                    for gripper_ac in all_prev_gripper_actions[device.active_robot]:
+                        all_prev_gripper_actions[device.active_robot][gripper_ac] = action_dict[gripper_ac]
+
+                    env.step(env_action)
+                    sync_joint_pos_with_kortex(env, left_base, left_base_cyclic, right_base, right_base_cyclic)
+      
+                    env.render()
+
+                    # limit frame rate if necessary
+                    if args.max_fr is not None:
+                        elapsed = time.time() - start
+                        diff = 1 / args.max_fr - elapsed
+                        if diff > 0:
+                            time.sleep(diff)
+        except KeyboardInterrupt:
+            print("Ctrl+C pressed: Stopping the bases...")
+            left_base.Stop()
+            right_base.Stop()
