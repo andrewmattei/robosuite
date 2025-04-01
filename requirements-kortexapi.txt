@@ -1,0 +1,5 @@
+# PLEASE USE "uv pip install --no-deps -r requirements-kortexapi.txt" TO INSTALL THIS FILE
+# requirements for the Kortex API
+protobuf==3.20
+deprecated==1.2.7
+https://artifactory.kinovaapps.com/artifactory/generic-public/kortex/API/2.6.0/kortex_api-2.6.0.post3-py3-none-any.whl
