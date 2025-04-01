@@ -2,6 +2,7 @@ import numpy as np
 import casadi as cs
 import matplotlib.pyplot as plt
 import casadi as ca
+import os
 
 # ============================== Helper Functions ==============================
 def compute_jacobian(q, l):
@@ -111,109 +112,325 @@ def compute_singular_values(J):
     
     return cs.sqrt(sigma1_sq), cs.sqrt(sigma2_sq)
 
-# ========================== Configuration Optimization ========================
-def find_optimal_configurations(l, m, q_init):
-    # Optimization 1: Maximize velocity capability (σ_max)
-    q_vel = cs.MX.sym('q_vel', 3)
-    J_vel = compute_jacobian(q_vel, l)  # Different symbolic variable
-    sigma_max, _ = compute_singular_values(J_vel)
+
+from scipy.interpolate import interp1d
+
+def match_trajectories(T_des, *args):
+    """
+    A translation of the MATLAB function match_trajectories to Python.
+    Original MATLAB code in: 
+    https://github.com/skousik/simulator/blob/master/src/utility/interpolation/match_trajectories.m
+    match_trajectories(T_des, T1, Z1, T2, Z2, ..., interp_type)
     
-    # Optimization 2: Maximize force capability (1/σ_min)
-    q_force = cs.MX.sym('q_force', 3)
-    J_force = compute_jacobian(q_force, l)  # Separate symbolic variable
-    _, sigma_min = compute_singular_values(J_force)
+    Given desired sample times T_des (1D array) and any number of time vectors (T_i)
+    with associated trajectories (Z_i, shape: n_states x n_t), this function reinterpolates
+    each trajectory linearly at the desired times.
     
-    # Solve independently
-    solver_vel = cs.nlpsol('solver_vel', 'ipopt', {'x': q_vel, 'f': -sigma_max})
-    sol_vel = solver_vel(x0=q_init)
-    q_opt = sol_vel['x'].full().flatten()
+    If T_des[0] < T_i[0], then the output Z_i is pre-padded with the first column of Z_i,
+    and similarly if T_des[-1] > T_i[-1].
+    
+    Parameters:
+        T_des : 1D array-like
+            The desired sample times.
+        *args:
+            A sequence of time vectors and trajectories: (T1, Z1, T2, Z2, ..., interp_type)
+            where interp_type is an optional string at the end (default 'linear').
+            
+    Returns:
+        list of np.ndarray
+            A list containing the reinterpolated trajectories corresponding to each input pair.
+    """
+    # Determine the interpolation type. If the last argument is a string, use it.
+    if isinstance(args[-1], str):
+        interp_type = args[-1]
+        traj_args = args[:-1]
+    else:
+        interp_type = 'linear'
+        traj_args = args
 
-    solver_force = cs.nlpsol('solver_force', 'ipopt', {'x': q_force, 'f': sigma_min})
-    sol_force = solver_force(x0=q_init)
-    q_start = sol_force['x'].full().flatten()
+    results = []
+    T_des = np.atleast_1d(T_des)
 
-    return q_start, q_opt
+    # Process each pair: (T, Z)
+    for i in range(0, len(traj_args), 2):
+        T = np.array(traj_args[i])
+        Z = np.array(traj_args[i+1])
+        # Ensure T is a 1D array and Z is 2D (n_states x n_t)
+        T = T.flatten()
 
-# ========================== Trajectory Optimization ===========================
-def time_optimal_trajectory(q_start, q_opt, m, l, tau_max):
-    """Solve time-optimal trajectory problem"""
+        # Pad T and Z if T_des extends outside the original T range.
+        if T_des[0] < T[0]:
+            T = np.concatenate(([T_des[0]], T))
+            # Pre-pad Z with its first column.
+            first_col = Z[:, [0]]
+            Z = np.concatenate((first_col, Z), axis=1)
+
+        if T_des[-1] > T[-1]:
+            T = np.concatenate((T, [T_des[-1]]))
+            # Append the last column of Z.
+            last_col = Z[:, [-1]]
+            Z = np.concatenate((Z, last_col), axis=1)
+
+        # If no interpolation is needed (single time point that matches T_des)
+        if len(T) == 1 and np.allclose(T_des, T):
+            result = Z
+        else:
+            # Create an interpolator.
+            # Note: We transpose Z so that interpolation is performed for each state.
+            f = interp1d(T, Z.T, kind=interp_type, axis=0, bounds_error=False, fill_value="extrapolate")
+            # Evaluate at T_des and then transpose back.
+            result = f(T_des).T
+
+        results.append(result)
+
+    return results
+
+
+# ========================== Trajectory Optimization ==========================
+
+
+def optimize_trajectory(q_start, dq_start, v_des, m, l, r,
+                        q_lower, q_upper, dq_lower, dq_upper,
+                        tau_lower, tau_upper,
+                        T, N,
+                        weight_v=0.001, weight_M00=10, weight_tau=0.001):
+    """
+    Optimize a trajectory for the 3DOF planar arm.
+    
+    The trajectory starts at q_start and dq_start, and over a time horizon T with N steps,
+    the optimizer aims to drive the end-effector (p3) velocity toward v_des.
+    
+    Constraints:
+        - Joint positions and velocities are kept within provided bounds.
+        - Joint torques (tau) are kept within provided bounds.
+        - System dynamics are enforced via a discretized model:
+              q[k+1] = q[k] + dt * dq[k]
+              dq[k+1] = dq[k] + dt * ddq[k],
+          where ddq[k] is computed from the dynamics:
+              M(q) ddq + C(q, dq)dq = tau.
+              
+    Additionally, a running cost includes:
+        - A term penalizing the squared error between the current end-effector velocity 
+          (computed from forward kinematics of the third link) and the desired velocity v_des.
+        - A term that *rewards* a high norm of the gradient dM00/dq (by subtracting its squared norm).
+        - A small penalty on torque effort.
+        
+    Parameters:
+      q_start    : (3x1 np.array) initial joint angles.
+      dq_start   : (3x1 np.array) initial joint velocities.
+      v_des      : (1d np.array) desired end-effector velocity.
+      m, l, r    : lists/arrays of link masses, lengths, and center-of-mass distances.
+      q_lower, q_upper: (3x1 arrays) joint limits.
+      dq_lower, dq_upper: (3x1 arrays) joint velocity limits.
+      tau_lower, tau_upper: (3x1 arrays) joint torque limits.
+      T          : total time horizon.
+      N          : number of discretization steps.
+      weight_v   : weight for the end-effector velocity tracking cost.
+      weight_dM  : weight for the dM00/dq cost (note: it is subtracted so that maximizing dM00/dq is encouraged).
+      weight_tau : weight for a small torque effort penalty.
+      
+    Returns:
+      sol : dictionary with optimal trajectories for q, dq, and tau.
+    """
+    dt = T / N
+    # v_des = cs.DM(v_des)
+
+    # Get the symbolic dynamics functions from your provided formulation.
+    # These functions assume a 3DOF arm.
+    q_sym = cs.MX.sym('q', 3)
+    dq_sym = cs.MX.sym('dq', 3)
+    M, C, M_fun, C_fun = formulate_symbolic_dynamic_matrices(m, l, r, q_sym, dq_sym)
+    dM00_dq = cs.jacobian(M[0, 0], q_sym)
+    dM00_dq_fun = cs.Function('dM00_dq', [q_sym], [dM00_dq])
+    J_p3 = compute_jacobian(q_sym, l)
+    J_p3_fun = cs.Function('J_p3', [q_sym], [J_p3])
+
+    # Create an Opti instance
     opti = cs.Opti()
-    T = opti.variable()                # Total time
-    N = 50                             # Number of control intervals
-    X = opti.variable(6, N+1)          # States [q; dq]
-    U = opti.variable(3, N)            # Controls
-    
-    # Parameters
-    dt = T/N
-    m_sym = cs.MX.sym('m', 3)
-    l_sym = cs.MX.sym('l', 3)
-    
-    # Dynamics constraints
+
+    # Decision variables: state and control trajectories
+    Q = opti.variable(3, N+1)   # joint angles trajectory
+    dQ = opti.variable(3, N+1)  # joint velocities trajectory
+    Tau = opti.variable(3, N)   # joint torques (control input)
+
+    # Set initial conditions
+    opti.subject_to(Q[:, 0] == q_start)
+    opti.subject_to(dQ[:, 0] == dq_start)
+
+    p_opts = {"print_time": True}
+    s_opts = {"print_level": 5}  # Increase to a higher level for more detailed output
+    opti.solver('ipopt', p_opts, s_opts)
+
+    # Cost accumulator
+    total_cost = 0
+
+
+    # Loop over time steps to enforce dynamics and accumulate cost
     for k in range(N):
-        q_k = X[0:3, k]
-        dq_k = X[3:6, k]
-        tau_k = U[:, k]
+        # Evaluate dynamics functions at the current state
+        qk = Q[:, k]
+        dqk = dQ[:, k]
+        M_k = M_fun(qk)
+        C_k = C_fun(qk, dqk)
         
-        # Compute dynamics
-        M, C = compute_dynamics_matrices(q_k, dq_k, m_sym, l_sym)
-        ddq_k = cs.solve(M, tau_k - C @ dq_k)
         
-        # State propagation
-        opti.subject_to(X[0:3, k+1] == X[0:3, k] + dt * dq_k)
-        opti.subject_to(X[3:6, k+1] == X[3:6, k] + dt * ddq_k)
+        # Compute acceleration: ddq = M^{-1} (tau - C*dq)
+        ddq_k = cs.mtimes(cs.inv(M_k), (Tau[:, k] - cs.mtimes(C_k, dqk)))
+        
+        # Dynamics constraints (Euler integration)
+        opti.subject_to(Q[:, k+1] == qk + dt * dqk)
+        opti.subject_to(dQ[:, k+1] == dqk + dt * ddq_k)
+        
+        # State bounds constraints
+        opti.subject_to(q_lower <= qk)
+        opti.subject_to(qk <= q_upper)
+        opti.subject_to(dq_lower <= dqk)
+        opti.subject_to(dqk <= dq_upper)
+        
+        # Control (torque) bounds constraints
+        opti.subject_to(tau_lower <= Tau[:, k])
+        opti.subject_to(Tau[:, k] <= tau_upper)
+        
+        # Compute end-effector velocity using forward kinematics:
+        # p3 = end_effector_pos(qk)
+        J_p3 = J_p3_fun(qk)  # 2x3 Jacobian
+        v_ee = cs.mtimes(J_p3, dqk) # end-effector velocity (2x1)
+
+        # Compute the magnitude of the end-effector velocity
+        epsilon = 1e-6
+        v_ee_mag = cs.sqrt(cs.sumsqr(v_ee) + epsilon)
+
+        
+        # Cost for velocity tracking (squared error)
+        cost_v = cs.sumsqr(v_ee_mag - v_des)
+        # cost_v = -cs.sumsqr(v_ee)
+
+        # TODO change the cost_v to pure velocity
+        # TODO set a specific inertia value instead of just maximizing
+        
+        
+        # M00 = M_k[0, 0]
+        # want higher M00 towards the end of the trajectory
+        # cost_M00 = - M00 * (k/N)**4
+        
+        # Optional cost on torque effort (to avoid unrealistic inputs)
+        # cost_tau = cs.sumsqr(Tau[:, k])
+        cost_tau = 0
+        
+        # Accumulate cost for this time step
+        total_cost = total_cost + weight_v * cost_v + weight_tau * cost_tau
+
+    # Add a terminal cost on the final inertia value
+    M00_N = M_fun(Q[:, -1])[0, 0]
+    cost_M00_N = - M00_N
+    total_cost = total_cost + weight_M00 * cost_M00_N
+
+    # Also enforce bounds on the final state
+    opti.subject_to(q_lower <= Q[:, N])
+    opti.subject_to(Q[:, N] <= q_upper)
+    opti.subject_to(dq_lower <= dQ[:, N])
+    opti.subject_to(dQ[:, N] <= dq_upper)
     
-    # Boundary conditions
-    opti.subject_to(X[:, 0] == cs.vertcat(q_start, 0, 0, 0))
-    opti.subject_to(X[:, -1] == cs.vertcat(q_opt, 0, 0, 0))
+    # Set the objective: minimize total cost over the trajectory
+    opti.minimize(total_cost)
     
-    # Control constraints
-    opti.subject_to(opti.bounded(-tau_max, U, tau_max))
+    # Set up the solver (e.g. IPOPT)
+    p_opts = {"print_time": False}
+    s_opts = {"print_level": 0}
+    opti.solver('ipopt', p_opts, s_opts)
     
-    # Time constraints
-    opti.subject_to(T >= 0.1)  # Minimum time
-    
-    # Objective: minimize time
-    opti.minimize(T)
-    
-    # Solve
-    opti.set_value(m_sym, m)
-    opti.set_value(l_sym, l)
-    opti.solver('ipopt')
+    # Solve the NLP
     sol = opti.solve()
     
-    return sol.value(X), sol.value(U), sol.value(T)
+    # Extract the solution trajectories
+    q_opt = sol.value(Q)
+    dq_opt = sol.value(dQ)
+    tau_opt = sol.value(Tau)
+    
+    return {'q': q_opt, 'dq': dq_opt, 'tau': tau_opt, 'cost': sol.value(total_cost)}
 
 # ================================ Main Execution ==============================
 if __name__ == "__main__":
-    # Robot parameters
-    m = [1.0, 1.0, 1.0]          # Link masses [kg]
-    l = [1.0, 1.0, 1.0]           # Link lengths [m]
-    tau_max = np.array([50.0, 50.0, 50.0])  # Torque limits [Nm]
+    # Arm parameters (example values)
+    m = [0.1/3, 0.1/3, 0.1/3]
+    l = [0.5, 0.5, 0.5]
+    r = [l[0]/20, l[1]/20, l[2]/20]
     
-    # Initial guess
-    q_init = np.array([np.pi/4, np.pi/4, np.pi/4])
+    # Initial conditions
+    q_start = np.array([0, np.pi*0.3, np.pi*0.5])
+    dq_start = np.array([0.0, 0.0, 0.0])
     
-    # Find optimal configurations
-    q_start, q_opt = find_optimal_configurations(l, m, q_init)
-    print(f"q_start: {np.degrees(q_start)}, q_opt: {np.degrees(q_opt)}")
+    # Desired end-effector velocity (2D)
+    # v_des = np.array([0.5, 0.0])
+    # optimize for only magnitude of velocity
+    v_ee_mag_des = 15.0
     
-    # Compute optimal trajectory
-    X_opt, U_opt, T_opt = time_optimal_trajectory(q_start, q_opt, m, l, tau_max)
+    # Bounds
+    q_lower = -4/5*np.pi * np.ones(3)
+    q_upper = 4/5*np.pi * np.ones(3)
+    dq_lower = -2*np.pi * np.ones(3)
+    dq_upper = 2*np.pi * np.ones(3)
+    tau_lower = -10*np.ones(3)
+    tau_upper = 10*np.ones(3)
     
-    # Visualization
-    plt.figure(figsize=(12, 6))
-    plt.subplot(2, 1, 1)
-    plt.plot(X_opt[0,:], label='theta1')
-    plt.plot(X_opt[1,:], label='theta2')
-    plt.plot(X_opt[2,:], label='theta3')
-    plt.title('Optimal Joint Angles')
-    plt.legend()
+    # Time horizon and discretization steps
+    T = 0.1  # seconds
+    N = 30
     
-    plt.subplot(2, 1, 2)
-    plt.plot(U_opt[0,:], label='tau1')
-    plt.plot(U_opt[1,:], label='tau2')
-    plt.plot(U_opt[2,:], label='tau3')
-    plt.title('Optimal Torques')
-    plt.legend()
+    # Call the optimizer
+    solution = optimize_trajectory(q_start, dq_start, v_ee_mag_des, m, l, r,
+                                   q_lower, q_upper, dq_lower, dq_upper,
+                                   tau_lower, tau_upper,
+                                   T, N)
+    
+    # Display the results
+    num_steps = solution['q'].shape[1]
+    v_ee = np.zeros((2, num_steps))
+    q_sym = cs.MX.sym('q', 3)
+    J_p3 = compute_jacobian(q_sym, l)
+    J_p3_fun = cs.Function('J_p3', [q_sym], [J_p3])
+    for k in range(num_steps):
+        qk = solution['q'][:, k]
+        dqk = solution['dq'][:, k]
+        v_ee[:, k] = np.array(J_p3_fun(qk)) @ dqk
+    
+    v_ee_mag = np.linalg.norm(v_ee, axis=0)
+    time = np.linspace(0, T, num_steps)
+
+    t_dense = np.linspace(0, T, 1000)
+    Z_opt = np.vstack((solution['q'], solution['dq']))
+    U_opt = np.hstack((solution['tau'], np.zeros((3,1))))
+    T_opt = np.linspace(0, T, num_steps)
+    [Z_dense] = match_trajectories(t_dense, T_opt, Z_opt)
+
+    # Save the trajectory data
+    trajectory_data = {
+        'T_opt': T_opt,
+        'Z_opt': Z_opt,
+        'U_opt': U_opt,
+    }
+    # get current file location
+    current_path = os.path.dirname(os.path.realpath(__file__))
+    save_path = os.path.join(current_path, 'opt_trajectory.npy')
+    np.save(save_path, trajectory_data)
+
+    # plot torque, v_ee, and v_ee_mag
+    plt.figure(figsize=(6, 8))
+    plt.subplot(4, 1, 1)
+    plt.plot(time[:-1], solution['tau'].T)
+    plt.ylabel('Torque (Nm)')
+    plt.subplot(4, 1, 2)
+    plt.plot(time, v_ee_mag)
+    plt.ylabel('End-effector velocity (m/s)')
+    plt.subplot(4, 1, 3)
+    plt.plot(time, v_ee[0, :], label='x')
+    plt.plot(time, v_ee[1, :], label='y')
+    plt.xlabel('Time (s)')
+    plt.ylabel('End-effector velocity components (m/s)')
+    plt.subplot(4, 1, 4)
+    plt.plot(t_dense, Z_dense[0:3, :].T)
+    plt.plot(time, solution['q'].T,'o')
+    plt.xlabel('Time (s)')
     plt.tight_layout()
     plt.show()
+    

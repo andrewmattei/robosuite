@@ -82,7 +82,7 @@ if __name__ == "__main__":
     # Note: In our coordinate frame (z positive upward),
     # a negative control pushes downward.
     Fz_acc_control = -10  # force during acceleration phase (downward)
-    Fz_decc_control = 20.0   # force during deceleration phase (upward)
+    Fz_decc_control = 50.0   # force during deceleration phase (upward)
 
     # Desired speed magnitudes (m/s) for bang–bang
     v_des = 20.0  # speed to reach before deceleration (magnitude)

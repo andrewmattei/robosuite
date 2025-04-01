@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 import os
 
 import casadi as cs
-from optimizing_max_jacobian import formulate_symbolic_dynamic_matrices, compute_dynamics_matrices
+from optimizing_max_jacobian import formulate_symbolic_dynamic_matrices, optimize_trajectory
+from optimizing_max_jacobian import match_trajectories, compute_jacobian
 
 # Robot parameters (defined at the top of the file)
 LINK_MASS = 0.1/3  # kg
@@ -22,6 +23,12 @@ trajectory_data = np.load(save_path, allow_pickle=True).item()
 REF_TIMES = trajectory_data['times']
 REF_POSITIONS = trajectory_data['positions']
 REF_VELOCITIES = trajectory_data['velocities']
+
+opt_save_path = os.path.join(current_path, 'opt_trajectory.npy')
+opt_trajectory_data = np.load(opt_save_path, allow_pickle=True).item()
+T_opt = opt_trajectory_data['T_opt']
+U_opt = opt_trajectory_data['U_opt']
+Z_opt = opt_trajectory_data['Z_opt']
 
 robot_xml = f"""
 <mujoco model="3DOF_Planar_Robot">
@@ -216,6 +223,27 @@ class RobotSystem:
         # Compute required torques using inverse dynamics
         tau = self.inverse_dynamics(ddq_des.flatten())
         return tau, u_increasing_inertia_dir
+    
+
+    def optimal_trajectory_tracking_ctrl(self, current_time, T_opt, U_opt, Z_opt):
+        """
+        Compute control torques for trajectory tracking
+        The strategy here is to use the desired position and velocity
+        to compute the desired acceleration.
+        """
+        
+        # Get reference state
+        [tau_ref, z_ref] = match_trajectories(current_time, T_opt, U_opt, T_opt, Z_opt)
+        q_ref = z_ref[:3].flatten()
+        dq_ref = z_ref[3:].flatten()
+        tau_ref = tau_ref.flatten()
+        
+        K_q = 100.0
+        K_dq = 10.0
+        # tau = tau_ref # TODO pure feedforward from opt based is not working due to lack of step size
+        # TODO P on dq better than P on both q and dq
+        tau = tau_ref+ K_dq * (dq_ref - self.data.qvel)
+        return tau
         
 
 
@@ -225,13 +253,6 @@ def main():
     model = mujoco.MjModel.from_xml_string(robot_xml)
     data = mujoco.MjData(model)
     robot = RobotSystem(model, data)
-    
-    # Simulation parameters
-    if track_traj:
-        simulation_time = REF_TIMES[-1]
-        model.opt.timestep = REF_TIMES[1] - REF_TIMES[0] # follow the trajectory time step
-    else:
-        simulation_time = 30.0  # seconds
     
     # Data recording
     times = []
@@ -253,20 +274,64 @@ def main():
     M, C, M_fun, C_fun = formulate_symbolic_dynamic_matrices(m, l, r, q_sym, dq_sym)
     dM00_dq = cs.jacobian(M[0, 0], q_sym)
     dM00_dq_fun = cs.Function('dM00_dq', [q_sym], [dM00_dq])
+    J_p3 = compute_jacobian(q_sym, l)
+    J_p3_fun = cs.Function('J_p3', [q_sym], [J_p3])
 
     # maximum base joint inertia magnitude
     M_max = M_fun(np.zeros(3))
     robot.M00_max = M_max[0, 0]
-    
+
+    # # Bounds
+    # q_lower = -4/5*np.pi * np.ones(3)
+    # q_upper = 4/5*np.pi * np.ones(3)
+    # dq_lower = -2*np.pi * np.ones(3)
+    # dq_upper = 2*np.pi * np.ones(3)
+    # tau_lower = -10*np.ones(3)
+    # tau_upper = 10*np.ones(3)
+
     
     # Set initial joint positions (optional)
-    data.qpos[:] = [np.pi, np.pi*0.3, np.pi*0.5]  # Example initial joint angles
+    q_start = np.array([0, np.pi*0.3, np.pi*0.5])
+    dq_start = np.zeros(model.nv)
+    data.qpos[:] = q_start
+    data.qvel[:] = dq_start
     
     # Desired joint accelerations (example: trying to hold position)
     # ddq_des = np.zeros(model.nv)
 
-    # phase management: "inertia" -> "velocity"
-    phase = "inertia"
+    # # solve for optimal trajectory
+    # T = 2.0
+    # N = 30
+    # v_ee_des = 20.0 # m/s
+    # # Call the optimizer
+    # solution = optimize_trajectory(q_start, dq_start, v_ee_des, m, l, r,
+    #                                q_lower, q_upper, dq_lower, dq_upper,
+    #                                tau_lower, tau_upper,
+    #                                T, N,
+    #                                weight_v=1.0, weight_dM=0.1, weight_tau=0.001)
+    # num_steps = solution['q'].shape[1]
+    # Z_opt = np.vstack((solution['q'], solution['dq']))
+    # U_opt = np.hstack((solution['tau'], np.zeros((3,1)))) # match shape of input to time
+    # T_opt = np.linspace(0, T, num_steps)
+
+
+     # Simulation parameters
+    if track_traj:
+        simulation_time = T_opt[-1]
+        model.opt.timestep = 0.00005
+        phase = "optimal"
+        ee_velocity_cs = []
+        for k in range(len(T_opt)):
+            q_opt = Z_opt[:3, k]
+            dq_opt = Z_opt[3:, k]
+            jacp_opt = J_p3_fun(q_opt)
+            ee_vel_opt = jacp_opt @ dq_opt
+            ee_velocity_cs.append(np.linalg.norm(ee_vel_opt))
+    else:
+        simulation_time = REF_TIMES[-1]
+        model.opt.timestep = REF_TIMES[1] - REF_TIMES[0] # follow the trajectory time step
+        # phase management: "inertia" -> "velocity"
+        phase = "inertia"
     
     try:
         while robot.viewer.is_running() and data.time < simulation_time:
@@ -281,6 +346,11 @@ def main():
             jacr = np.zeros((3, model.nv))
             mujoco.mj_jacSite(model, data, jacp, jacr, robot.ee_site_id)
             ee_vel = jacp @ data.qvel
+
+
+            jacp_cs = J_p3_fun(data.qpos)
+            ee_vel_cs = jacp_cs @ data.qvel
+            # print(f"ee_vel: {ee_vel}, ee_vel_cs: {ee_vel_cs}")
             
             # # Compute tracking control torques
             # if track_traj:
@@ -299,6 +369,8 @@ def main():
                     robot.u_prev = u_inc_iner # inform velocity phase about the direction of increasing inertia
             elif phase == "velocity":
                 tau = robot.max_manip_vel_tracking_ctrl(data.time)
+            elif phase == "optimal":
+                tau = robot.optimal_trajectory_tracking_ctrl(data.time, T_opt, U_opt, Z_opt)
 
             # Record data
             times.append(data.time)
@@ -308,10 +380,11 @@ def main():
             ee_velocities.append(np.linalg.norm(ee_vel))
             applied_torques.append(tau.copy())
             jaco_pos.append(jacp)
-            motion_vector.append(u_inc_iner)
+            if not track_traj:
+                motion_vector = np.array(motion_vector)  # Shape: (N, 3)
             
             # Apply torques and step simulation
-            data.ctrl[:] = tau
+            data.ctrl[:] = tau.flatten()
             mujoco.mj_step(model, data)
             robot.viewer.sync()
             
@@ -334,9 +407,13 @@ def main():
     ee_positions = np.array(ee_positions)
     ee_velocities = np.array(ee_velocities)
     applied_torques = np.array(applied_torques)
-    motion_vector = np.array(motion_vector)  # Shape: (N, 3)
+    if not track_traj:
+        motion_vector = np.array(motion_vector)  # Shape: (N, 3)
     
-    fig, axes = plt.subplots(3, 1, figsize=(10, 12))
+    if track_traj:
+        fig, axes = plt.subplots(5, 1, figsize=(10, 16))
+    else:
+        fig, axes = plt.subplots(3, 1, figsize=(10, 12))
     
     # End-effector position
     axes[0].plot(times, ee_positions[:, 0], label='x', linewidth=2)
@@ -351,6 +428,8 @@ def main():
     axes[1].plot(times, ee_velocities, label='Actual', linewidth=2)
     if track_traj:
         # Add reference velocity if tracking trajectory
+        axes[1].plot(T_opt, ee_velocity_cs, '--', label='Desired', linewidth=2)
+    else:
         ref_velocities = [np.linalg.norm(vel) for vel in REF_VELOCITIES]
         axes[1].plot(REF_TIMES, ref_velocities, '--', label='Desired', linewidth=2)
     axes[1].set_title('End-Effector Velocity Magnitude')
@@ -361,60 +440,79 @@ def main():
     # Applied torques
     for i in range(3):
         axes[2].plot(times, applied_torques[:, i], label=f'Joint {i+1}')
+        if track_traj:
+            axes[2].plot(T_opt, U_opt[i, :], '--')
     axes[2].set_title('Applied Torques')
     axes[2].set_ylabel('Torque (N⋅m)')
     axes[2].set_xlabel('Time (s)')
     axes[2].grid(True)
     axes[2].legend()
+
+    if track_traj:
+        # compare the actual trajectory with the optimal trajectory
+        joint_positions_opt = Z_opt[:3, :].T
+        joint_velocities_opt = Z_opt[3:, :].T
+        axes[3].plot(times, joint_positions, label='Actual', linewidth=2)
+        axes[3].plot(T_opt, joint_positions_opt, '--', label='Optimal', linewidth=2)
+        axes[3].set_ylabel('Joint Positions (rad)')
+        axes[3].set_xlabel('Time (s)')
+        axes[3].grid(True)
+
+        axes[4].plot(times, joint_velocities, label='Actual', linewidth=2)
+        axes[4].plot(T_opt, joint_velocities_opt, '--', label='Optimal', linewidth=2)
+        axes[4].set_ylabel('Joint Velocities (rad/s)')
+        axes[4].set_xlabel('Time (s)')
+        axes[4].grid(True)
     
     plt.tight_layout()
     plt.show()
 
 
-    # Downsample based on simulation time: select one sample per 0.01 sec.
-    selected_indices = []
-    last_time = -np.inf
-    for i, t in enumerate(times):
-        if t - last_time >= 0.01:
-            selected_indices.append(i)
-            last_time = t
+    if not track_traj:
+        # Downsample based on simulation time: select one sample per 0.01 sec.
+        selected_indices = []
+        last_time = -np.inf
+        for i, t in enumerate(times):
+            if t - last_time >= 0.01:
+                selected_indices.append(i)
+                last_time = t
 
-    # Extract x and y positions from the end–effector positions
-    x = ee_positions[:, 0]
-    y = ee_positions[:, 1]
-    u = motion_vector[:, 0]
-    v = motion_vector[:, 1]
+        # Extract x and y positions from the end–effector positions
+        x = ee_positions[:, 0]
+        y = ee_positions[:, 1]
+        u = motion_vector[:, 0]
+        v = motion_vector[:, 1]
 
-    # Apply downsampling
-    x_down = x[selected_indices]
-    y_down = y[selected_indices]
-    u_down = u[selected_indices]
-    v_down = v[selected_indices]
+        # Apply downsampling
+        x_down = x[selected_indices]
+        y_down = y[selected_indices]
+        u_down = u[selected_indices]
+        v_down = v[selected_indices]
 
-    # Compute the horizontal axis range from the full trajectory
-    x_min, x_max = np.min(x), np.max(x)
-    arrow_length = (x_max - x_min) / 20.0  # Arrow length is 1/20 of the x–axis range
+        # Compute the horizontal axis range from the full trajectory
+        x_min, x_max = np.min(x), np.max(x)
+        arrow_length = (x_max - x_min) / 20.0  # Arrow length is 1/20 of the x–axis range
 
-    # Normalize the downsampled motion vectors
-    motion_mag = np.sqrt(u_down**2 + v_down**2)
-    motion_mag[motion_mag == 0] = 1.0  # Avoid division by zero
-    u_norm = u_down / motion_mag
-    v_norm = v_down / motion_mag
+        # Normalize the downsampled motion vectors
+        motion_mag = np.sqrt(u_down**2 + v_down**2)
+        motion_mag[motion_mag == 0] = 1.0  # Avoid division by zero
+        u_norm = u_down / motion_mag
+        v_norm = v_down / motion_mag
 
-    # Scale the normalized vectors by arrow_length
-    u_plot = u_norm * arrow_length
-    v_plot = v_norm * arrow_length
+        # Scale the normalized vectors by arrow_length
+        u_plot = u_norm * arrow_length
+        v_plot = v_norm * arrow_length
 
-    plt.figure(figsize=(8, 8))
-    plt.quiver(x_down, y_down, u_plot, v_plot, color='r', angles='xy',
-               scale_units='xy', scale=1, width=0.005)
-    plt.plot(x, y, 'bo-', label="End-Effector Trajectory", markersize=arrow_length/5)
-    plt.xlabel('X Position (m)')
-    plt.ylabel('Y Position (m)')
-    plt.title('Motion Vector (u_inc_iner) at End-Effector')
-    plt.grid(True)
-    plt.legend()
-    plt.show()
+        plt.figure(figsize=(8, 8))
+        plt.quiver(x_down, y_down, u_plot, v_plot, color='r', angles='xy',
+                scale_units='xy', scale=1, width=0.005)
+        plt.plot(x, y, 'bo-', label="End-Effector Trajectory", markersize=arrow_length/5)
+        plt.xlabel('X Position (m)')
+        plt.ylabel('Y Position (m)')
+        plt.title('Motion Vector (u_inc_iner) at End-Effector')
+        plt.grid(True)
+        plt.legend()
+        plt.show()
 
 if __name__ == "__main__":
     main()
