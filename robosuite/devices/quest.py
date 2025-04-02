@@ -2,7 +2,7 @@ import time
 import threading
 import numpy as np
 
-from robosuite.devices.oculus_reader.oculus_reader import OculusReader
+# from robosuite.devices.oculus_reader.oculus_reader import OculusReader
 from robosuite.devices import *
 from robosuite.models.robots import *
 from robosuite.robots import *

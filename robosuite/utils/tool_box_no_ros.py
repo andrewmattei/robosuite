@@ -1,15 +1,12 @@
 # Toolbox for Kinova Gen3 7 dof robot
 # Put-togethered by: Chuizheng Kong
-# Last Edited: 2024-06-13
+# Last Edited: 2025-03-31
 
 import os, time, threading
 import numpy as np
 
-
-# from kortex_api.autogen.client_stubs.BaseClientRpc import BaseClient
-# from kortex_api.autogen.client_stubs.BaseCyclicClientRpc import BaseCyclicClient
-# from kortex_api.autogen.client_stubs.ControlConfigClientRpc import ControlConfigClient
-# from kortex_api.autogen.messages import Base_pb2, BaseCyclic_pb2, Common_pb2
+# expected to run 'uv pip install -r requirements-extra.txt'
+from kortex_api.autogen.messages import Base_pb2
 
 ##**************Catalog of Functions**************
 ## 1. Interfacing Configs
@@ -252,8 +249,8 @@ def H_mtx_to_kinova_pose_in_base(H_mtx):
 
 ######################### Robot Command Functions #########################
 class TCPArguments:
-    def __init__(self):
-        self.ip = "192.168.1.10"
+    def __init__(self, ip="192.168.1.10"):
+        self.ip = ip
         self.username = "admin"
         self.password = "admin"
 
@@ -293,6 +290,7 @@ def get_joint_angles(base):
 
 
 def get_realtime_q_qdot(base_feedback):
+    # this is for low-level control
     # will convert from degrees to radians then wrapped to [-pi, pi]
     joint_angles = []
     joint_velocities = []
@@ -312,7 +310,7 @@ def get_realtime_torque(base_feedback):
     return np.array(joint_torques)
 
 
-def move_to_home_position(base):
+def move_to_home_position(base, action_name="Home"):
     TIMEOUT_DURATION = 10  # in seconds
     # Make sure the arm is in Single Level Servoing mode (high-level mode)
     base_servo_mode = Base_pb2.ServoingModeInformation()
@@ -326,7 +324,7 @@ def move_to_home_position(base):
     action_list = base.ReadAllActions(action_type)
     action_handle = None
     for action in action_list.action_list:
-        if action.name == "Home":
+        if action.name == action_name:
             action_handle = action.handle
 
     if action_handle == None:
@@ -577,6 +575,48 @@ def move_joints(base, desired_joints):
     else:
         print("Timeout on action notification wait")
     return finished
+
+from concurrent.futures import TimeoutError
+def home_both_arms(left_base, right_base, action_name="Home"):
+    """
+    Homes both the left and right arms concurrently using move_to_home_position.
+    
+    Args:
+        left_base (BaseClient): Client interface for the left arm.
+        right_base (BaseClient): Client interface for the right arm.
+        action_name (str): The action name to send to move_to_home_position.
+    
+    Returns:
+        dict: A dictionary with keys "left" and "right" indicating success (True/False) for each arm.
+    """
+    results = {}
+
+    def home_arm(base, action_name):
+        try:
+            result = move_to_home_position(base, action_name)
+            results[action_name] = result
+            print(f"{action_name} action reached: {result}")
+        except TimeoutError as e:
+            print(f"TimeoutError while homing {action_name} arm: {e}")
+            results[action_name] = False
+        except Exception as e:
+            print(f"Error while doing {action_name} action: {e}")
+            results[action_name] = False
+
+    # action name for each arms
+    left_name = "L_" + action_name
+    right_name = "R_" + action_name
+
+    left_thread = threading.Thread(target=home_arm, args=(left_base, left_name))
+    right_thread = threading.Thread(target=home_arm, args=(right_base, right_name))
+
+    left_thread.start()
+    right_thread.start()
+
+    left_thread.join()
+    right_thread.join()
+
+    return results
 
 
 ######################### Other tools #########################
