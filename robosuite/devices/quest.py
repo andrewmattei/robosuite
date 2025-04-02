@@ -85,8 +85,7 @@ class Quest(Device):
         self.grip_pressed = False  # this can be used to control engage
         self.trigger_pressed = dict([(name, False) for name in self._controller_names])
         self._reset_pressed = False # whether we should reset the transform
-        self.engaged = False # TODO(VS) why? remove, not useful
-
+        
         self.hand_grasp = [-1]
         # TODO above variables can perhaps be made local variables
         self.initialize_pose = True
@@ -154,8 +153,7 @@ class Quest(Device):
         self.controller_state = None
         if self.robot_interface is not None or self.debug:
             self.set_robot_transform() # intializes robot pose and controller_state
-        self.engaged = False # TODO maybe remove, not useful
-
+        
     def start_control(self):
         """
         Method that should be called externally before controller can
@@ -163,8 +161,7 @@ class Quest(Device):
         """
         self._reset_internal_state()
         self._reset_state = 0
-        self.engaged = True
-
+        
     def _postprocess_device_outputs(self, dpos, drotation):
         drotation = drotation * 1
         dpos = dpos * 30
@@ -199,6 +196,8 @@ class Quest(Device):
             # Parse data per controller.
             for controller in quest_data:
                 new_controller_state[controller] = {}
+                active_robot = self.active_robot # need to add code to handle more than two robots
+                # see keyboard.py to know how to switch 
 
                 controller_state = quest_data[controller]
 
@@ -319,8 +318,6 @@ class Quest(Device):
                         print("Deltas")
                         print(f"DEBUG get_controller_state(): delta_pos vs ee_curr: {delta_pos} {ee_curr_posit}")
 
-
-                    self.engaged = True # TODO maybe remove, not useful
                     new_controller_state[controller] = dict(
                         dpos=delta_pos,
                         # dpos=np.zeros(3),
@@ -334,7 +331,6 @@ class Quest(Device):
                     # self.quest_init_rot[controller] = quest_curr_rot
                     # self.ee_init_rot[controller] = ee_curr_rpy
                 else:
-                    self.engaged = False # TODO maybe remove, not useful
                     current_pos = self.robot_interface.robots[0].recent_ee_pose[self.active_arm].last
                     current_quat = np.array([current_pos[4], current_pos[5], current_pos[6], current_pos[3]])
                     self.ee_init_pos[controller] = np.array([current_pos[0], current_pos[1], current_pos[2]])
@@ -421,6 +417,25 @@ class Quest(Device):
         grasp = 1 if grasp else -1
 
         ac_dict = {}
+
+        # from Kong's bounce.py:
+        # desired_arm_positions = active_robot.init_qpos
+        # desired_torso_height = env.init_torso_height
+
+        # action_dict = {}
+        # for arm in active_robot.arms:
+        #     # got the following syntex from demo_sensor_corruption.py
+        #     if arm == "right":
+        #         action_dict[arm] = desired_arm_positions[:7]
+        #     if arm == "left":
+        #         action_dict[arm] = desired_arm_positions[7:]
+        #     action_dict[f"{arm}_gripper"] = np.zeros(active_robot.gripper[arm].dof)
+
+        # action_dict["torso"] = np.array([desired_torso_height,])
+        # action_dict["base"] = np.array([0.0, 0.0, 0.0])
+
+        # env_action = active_robot.create_action_vector(action_dict)
+
         # populate delta actions for the arms
         for arm in robot.arms:
             # OSC keys
@@ -445,7 +460,7 @@ class Quest(Device):
                 torso_ac = np.zeros(1)
 
             ac_dict["base"] = base_ac
-            # ac_dict["torso"] = torso_ac
+            ac_dict["torso"] = np.array([0.342,])
             ac_dict["base_mode"] = np.array([1 if base_mode is True else -1])
         else:
             arm_norm_delta = np.concatenate([dpos, drotation])
