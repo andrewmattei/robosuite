@@ -286,25 +286,38 @@ class Sphere(ManipulationEnv):
 
     def _ik_left_arm_to_sphere_tangent(self, sphere_center, sphere_radius):
         # Compute the left-most point (assuming positive x is right)
-        # target_pos = sphere_center + np.array([-sphere_radius, 0, 0])
+        target_pos = sphere_center + np.array([-sphere_radius, 0, 0])
+        target_pos = sphere_center
         # Define a desired tangent orientation.
         # Here, we form a desired 4x4 homogeneous transformation.
         # (You should replace with the specific orientation your task requires.)
         lhand_id = self.sim.model.body_name2id('robot0_left_hand')
         R_wd_lhand = self.sim.data.body_xmat[lhand_id].reshape(3, 3)
         R_desired = R_wd_lhand  # placeholder: identity rotation
+        
         T_wd_target = np.eye(4)
         T_wd_target[:3, :3] = R_desired
-        T_wd_target[:3, 3] = sphere_center
+        T_wd_target[:3, 3] = target_pos
         
         lbase_id = self.sim.model.body_name2id('robot0_left_arm_fixed_base_link')
         p_wd_lbase = self.sim.data.body_xpos[lbase_id]
         R_wd_lbase = self.sim.data.body_xmat[lbase_id].reshape(3, 3)
+        # print("Left base position:", p_wd_lbase)
+        # print("Left base rotation:\n", R_wd_lbase)
         T_wd_lbase = np.eye(4)
         T_wd_lbase[:3, :3] = R_wd_lbase
         T_wd_lbase[:3, 3] = p_wd_lbase
-        T_lbase_target = T_wd_lbase
-        T_lbase_target = np.linalg.inv(T_wd_lbase) @ T_wd_target
+        
+        print("T_wd_lbase:\n", T_wd_lbase)
+        print("T_wd_target:\n", T_wd_target)
+        # to get R_lbase_target in lbase frame, we need to do the following:
+        R_lbase_lhand_in_wd = R_wd_lbase.T @ R_wd_lhand
+        R_lbase_lhand = R_wd_lbase.T @ R_lbase_lhand_in_wd @ R_wd_lbase
+        print("R_lbase_lhand:\n", R_lbase_lhand)
+        T_lbase_target = np.linalg.inv(T_wd_lbase) @ T_wd_target # original
+        # T_lbase_target = np.linalg.inv(T_wd_target) @ T_wd_lbase # reverse
+        print("T_lbase_target:\n", T_lbase_target)
+
 
         # Path to the robot's URDF (update with your actual URDF file)
         urdf_path = "robosuite/models/assets/robots/dual_kinova3/leonardo.urdf"
@@ -314,7 +327,7 @@ class Sphere(ManipulationEnv):
         lq0 = self.sim.data.qpos[self.robots[0]._ref_joint_pos_indexes[7:14]]
 
         # Compute IK for the left arm using Pinocchio.
-        left_ee = "tool_frame_joint"
+        left_ee = "end_effector"
         q_sol = compute_ik(urdf_path, left_ee, T_lbase_target, lq0)
         
         desired_arm_pos = self.robots[0].init_qpos.copy()
@@ -426,6 +439,20 @@ if __name__ == "__main__":
         # Set the targeting pose to be just a bit front of the initial robot hand position
         left_hand_body_id = env.sim.model.body_name2id('robot0_left_hand')
         left_hand_pos = data.xpos[left_hand_body_id]
+
+        ball_body_id = env.sim.model.body_name2id('sphere_main')
+        p_wd_ball = env.sim.data.body_xpos[ball_body_id]
+        R_wd_ball = env.sim.data.body_xmat[ball_body_id].reshape(3, 3)
+
+        print("Ball position:", p_wd_ball)
+        print("Ball rotation:\n", R_wd_ball)
+
+        p_wd_lhand = env.sim.data.body_xpos[left_hand_body_id]
+        
+        print("Bool: ", left_hand_pos == p_wd_lhand)
+        R_wd_lhand = env.sim.data.body_xmat[left_hand_body_id].reshape(3, 3)
+        print("Left hand position:", p_wd_lhand)
+        print("Left hand rotation:\n", R_wd_lhand)
         # sphere_center = data.xpos[env.sim.model.body_name2id('sphere_main')]
         sphere_radius = 0.05
         desired_joint = env._ik_left_arm_to_sphere_tangent(left_hand_pos, sphere_radius)

@@ -9,7 +9,7 @@
                 <joint name="fixed" type="free"/>
                 <!-- Removed inertial block for visual-only object -->
                 <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
-                <geom type="sphere" size="0.1" material="sphere_material" group="0" contype="0" conaffinity="0"/>
+                <geom type="sphere" size="0.05" material="sphere_material" group="0" contype="0" conaffinity="0"/>
             </body>
             <!-- Sites for object grasping -->
             <!-- <site name="bottom_site" pos="0 0 -0.025" size="0.001 0.001 0.001" rgba="0 0 0 0"/> -->
