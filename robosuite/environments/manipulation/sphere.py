@@ -1,6 +1,7 @@
 from collections import OrderedDict
 
 import numpy as np
+np.set_printoptions(precision=4, suppress=True)
 import robosuite as suite
 from robosuite.environments.manipulation.manipulation_env import ManipulationEnv
 from robosuite.models.arenas import TableArena
@@ -54,8 +55,8 @@ class Sphere(ManipulationEnv):
         # settings for table top
         self.table_full_size = table_full_size
         self.table_friction = table_friction
-        self.table_offset = np.array((0, 0, 0.7))  # made changes
-
+        # self.table_offset = np.array((0, 0, 0.7))  # made changes
+        self.table_offset = np.array((0, 0, 0.5))  # made changes
         # Omron LD-60 Mobile Base setting
         self.init_torso_height = 0.342
 
@@ -142,13 +143,13 @@ class Sphere(ManipulationEnv):
             self.placement_initializer = UniformRandomSampler(
                 name="ObjectSampler",
                 mujoco_objects=self.ball,
-                x_range=[-0.03, 0.03],
-                y_range=[0.19, 0.21],
+                x_range=[0.0, 0.0],
+                y_range=[0.41, 0.41],
                 rotation=None,
                 ensure_object_boundary_in_range=False,
                 ensure_valid_placement=True,
                 reference_pos=self.table_offset,
-                z_offset=0.1,  # 1 meter above the table
+                z_offset=0.4,  # 1 meter above the table
             )
 
         # task includes arena, robot, and objects of interest
@@ -283,32 +284,44 @@ class Sphere(ManipulationEnv):
         env_action = active_robot.create_action_vector(action_dict)
         return env_action
 
-    def _jog_left_arm_to_sphere_tangent(self, sphere_center, sphere_radius):
+    def _ik_left_arm_to_sphere_tangent(self, sphere_center, sphere_radius):
         # Compute the left-most point (assuming positive x is right)
-        target_pos = sphere_center + np.array([-sphere_radius, 0, 0])
+        # target_pos = sphere_center + np.array([-sphere_radius, 0, 0])
         # Define a desired tangent orientation.
         # Here, we form a desired 4x4 homogeneous transformation.
         # (You should replace with the specific orientation your task requires.)
-        R_desired = np.eye(3)  # placeholder: identity rotation
-        T_target = np.eye(4)
-        T_target[:3, :3] = R_desired
-        T_target[:3, 3] = target_pos
+        lhand_id = self.sim.model.body_name2id('robot0_left_hand')
+        R_wd_lhand = self.sim.data.body_xmat[lhand_id].reshape(3, 3)
+        R_desired = R_wd_lhand  # placeholder: identity rotation
+        T_wd_target = np.eye(4)
+        T_wd_target[:3, :3] = R_desired
+        T_wd_target[:3, 3] = sphere_center
         
+        lbase_id = self.sim.model.body_name2id('robot0_left_arm_fixed_base_link')
+        p_wd_lbase = self.sim.data.body_xpos[lbase_id]
+        R_wd_lbase = self.sim.data.body_xmat[lbase_id].reshape(3, 3)
+        T_wd_lbase = np.eye(4)
+        T_wd_lbase[:3, :3] = R_wd_lbase
+        T_wd_lbase[:3, 3] = p_wd_lbase
+        T_lbase_target = T_wd_lbase
+        T_lbase_target = np.linalg.inv(T_wd_lbase) @ T_wd_target
+
         # Path to the robot's URDF (update with your actual URDF file)
         urdf_path = "robosuite/models/assets/robots/dual_kinova3/leonardo.urdf"
         # Name of the left end-effector frame (adjust as needed)
-        left_ee = "tool_frame"
         # Initial configuration for the left arm (using full robot qpos; adjust joint indices)
-        q0 = self.robots[0].init_qpos.copy()
-        
+        # q0 = self.robots[0].init_qpos.copy()
+        lq0 = self.sim.data.qpos[self.robots[0]._ref_joint_pos_indexes[7:14]]
+
         # Compute IK for the left arm using Pinocchio.
-        q_sol = compute_ik(urdf_path, left_ee, T_target, q0[7:14])
+        left_ee = "tool_frame_joint"
+        q_sol = compute_ik(urdf_path, left_ee, T_lbase_target, lq0)
         
-        desired_arm_pos = q0.copy()
+        desired_arm_pos = self.robots[0].init_qpos.copy()
         # Assuming left arm joints are indexed from 7 to 14.
         desired_arm_pos[7:14] = q_sol
         
-        return self._jog_robot_to_pose(desired_arm_pos)
+        return desired_arm_pos
             
 class TimeKeeper:
     def __init__(self, desired_freq=60):
@@ -409,7 +422,14 @@ if __name__ == "__main__":
         viewer.cam.lookat[:] = np.array([0.0, -0.25, 0.824])
 
         time_keeper = TimeKeeper(desired_freq=1/model.opt.timestep)
-
+        
+        # Set the targeting pose to be just a bit front of the initial robot hand position
+        left_hand_body_id = env.sim.model.body_name2id('robot0_left_hand')
+        left_hand_pos = data.xpos[left_hand_body_id]
+        # sphere_center = data.xpos[env.sim.model.body_name2id('sphere_main')]
+        sphere_radius = 0.05
+        desired_joint = env._ik_left_arm_to_sphere_tangent(left_hand_pos, sphere_radius)
+        
         while viewer.is_running() and not env.done and data.time < simulation_time:
             if time_keeper.should_step():
                 # Simulation step
@@ -431,10 +451,8 @@ if __name__ == "__main__":
                 # zeros_config = np.zeros(14)
                 # env_action = env._jog_robot_to_pose(zeros_config, desired_torso_height)
                 
-                sphere_center = data.xpos[env.sim.model.body_name2id('sphere_main')]
-                sphere_radius = 0.05
-                env_action = env._jog_left_arm_to_sphere_tangent(sphere_center, sphere_radius)
-
+                env_action = env._jog_robot_to_pose(desired_joint)
+                # env_action = np.zeros_like(env_action)
                 env.step(env_action)
 
                 total_force = 0

@@ -10,6 +10,7 @@ def compute_ik(urdf_path, ee_frame, target_pose, q0, max_iter=100, tol=1e-4):
         urdf_path (str): Path to the robot's URDF.
         ee_frame (str): Name of the end-effector frame.
         target_pose (np.ndarray): Desired 4x4 homogeneous transformation.
+        target_pose (np.ndarray): Desired 3x1 position.
         q0 (np.ndarray): Initial configuration.
         max_iter (int): Maximum iterations.
         tol (float): Tolerance.
@@ -36,12 +37,13 @@ def compute_ik(urdf_path, ee_frame, target_pose, q0, max_iter=100, tol=1e-4):
     #     q += dq
     # return q
 
-    JOINT_ID = 7
     oMdes = pin.SE3(target_pose[:3,:3], target_pose[:3,3])
 
     model = pin.buildModelFromUrdf(urdf_path)
     data = model.createData()
     # Use the default Pinocchio solver (e.g., Levenberg-Marquardt) as a placeholder
+    tool_frame_id = model.getFrameId(ee_frame)
+
     q = q0.copy()
     q_pin = standard_to_pinocchio(model, q)
     # q_pin      = pin.neutral(model)
@@ -53,7 +55,12 @@ def compute_ik(urdf_path, ee_frame, target_pose, q0, max_iter=100, tol=1e-4):
     i=0
     while True:
         pin.forwardKinematics(model,data,q_pin)
-        dMi = oMdes.actInv(data.oMi[JOINT_ID])
+        pin.updateFramePlacement(model, data, tool_frame_id)
+        # TODO debug tool_frame_id
+        # dMi_1 = oMdes.actInv(data.oMi[tool_frame_id])
+        # dMi_2 = data.oMi[tool_frame_id].actInv(oMdes)
+        dMi_2 = len(data.oMi)
+        dMi = dMi_2
         err = pin.log(dMi).vector
         if norm(err) < eps:
             success = True
@@ -61,7 +68,7 @@ def compute_ik(urdf_path, ee_frame, target_pose, q0, max_iter=100, tol=1e-4):
         if i >= IT_MAX:
             success = False
             break
-        J = pin.computeJointJacobian(model,data,q_pin ,JOINT_ID)
+        J = pin.computeJointJacobian(model,data,q_pin ,tool_frame_id)
         v = - J.T.dot(solve(J.dot(J.T) + damp * np.eye(6), err))
         q_pin = pin.integrate(model,q_pin,v*DT)
         if not i % 10:
