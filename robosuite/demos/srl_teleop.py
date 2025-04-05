@@ -90,6 +90,7 @@ Examples:
 
 import argparse
 import time
+import os
 
 import numpy as np
 
@@ -98,13 +99,18 @@ from robosuite import load_composite_controller_config
 from robosuite.controllers.composite.composite_controller import WholeBody
 from robosuite.wrappers import VisualizationWrapper
 
+# get the path of robosuite
+repo_path = os.path.abspath(os.path.join(os.path.abspath(__file__), os.pardir, os.pardir))
+dual_kinova3_osc_config_path = os.path.join(repo_path, "controllers", "config", "robots", "dualkinova3_osc.json")
+
+
 import mujoco
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--environment", type=str, default="TwoArmLift")
-    parser.add_argument("--robots", nargs="+", type=str, default="Baxter", help="Which robot(s) to use in the env")
+    parser.add_argument("--environment", type=str, default="Bounce")
+    parser.add_argument("--robots", nargs="+", type=str, default="DualKinova3", help="Which robot(s) to use in the env")
     parser.add_argument(
         "--config", type=str, default="default", help="Specified environment configuration if necessary"
     )
@@ -114,10 +120,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--controller",
         type=str,
-        default=None,
+        default=dual_kinova3_osc_config_path,
         help="Choice of controller. Can be generic (eg. 'BASIC' or 'WHOLE_BODY_MINK_IK') or json file (see robosuite/controllers/config for examples) or None to get the robot's default controller if it exists",
     )
-    parser.add_argument("--device", type=str, default="quest")
+    parser.add_argument("--device", type=str, default="questdualkinova3", help="Device to use for control")
     parser.add_argument("--pos-sensitivity", type=float, default=1.0, help="How much to scale position user inputs")
     parser.add_argument("--rot-sensitivity", type=float, default=1.0, help="How much to scale rotation user inputs")
     parser.add_argument(
@@ -184,6 +190,10 @@ if __name__ == "__main__":
         from robosuite.devices.quest import Quest
 
         device = Quest(env=env,debug=True)
+    elif args.device == "questdualkinova3":
+        from robosuite.devices.quest_dualkinova3_teleop import QuestDualKinova3Teleop
+
+        device = QuestDualKinova3Teleop(env=env, debug=False)
     else:
         raise Exception("Invalid device choice: choose either 'keyboard', 'spacemouse', or 'quest'.")
 

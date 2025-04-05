@@ -11,21 +11,6 @@ from pynput.keyboard import Controller, Key, Listener
 import robosuite.utils.transform_utils as T
 import robosuite.utils.tool_box_no_ros as tb
 
-### Example output from OculusReader.get_transformations_and_buttons() (Rail Version)
-# (
-#     {
-#         'l': array([[-0.15662  , -0.0793369,  0.177977 ,  0.012368 ],
-#         [ 0.0902732, -0.231901 , -0.0239341, -0.0251249],
-#         [ 0.172688 ,  0.0492721,  0.173929 , -0.0560221],
-#         [ 0.       ,  0.       ,  0.       ,  1.       ]]),
-#         'r': array([[ 0.923063 , -0.0438108, -0.382145 ,  0.183798 ],
-#         [-0.351833 ,  0.305362 , -0.884854 , -0.303325 ],
-#         [ 0.155459 ,  0.951228 ,  0.266455 , -0.102936 ],
-#         [ 0.       ,  0.       ,  0.       ,  1.       ]])
-#     },
-#     {'A': False, 'B': False, 'RThU': True, 'RJ': False, 'RG': True, 'RTr': False, 'X': False, 'Y': False, 'LThU': True, 'LJ': False, 'LG': False, 'LTr': False, 'leftJS': (0.0, 0.0), 'leftTrig': (0.0,), 'leftGrip': (0.0,), 'rightJS': (0.0, 0.0), 'rightTrig': (0.0,), 'rightGrip': (1.0,)}
-# )
-
 # With Nadun's version:
 # {'LeftController': {'PrimaryButton': 0, 'SecondaryButton': 0, 'Trigger': 0, 'Grip': 0, 'Menu': 0, 'AxisClicked': 0, 'IsTracked': 0, 
 # 'TriggerValue': 0.0, 'GripValue': 0.0, 'Thumbstick': {'x': 0.0, 'y': 0.0}, 'Position': {'x': -0.12119103968143463, 'y': 0.5454994440078735, 'z': 0.8644617795944214}, 
@@ -34,7 +19,7 @@ import robosuite.utils.tool_box_no_ros as tb
 # 'TriggerValue': 0.0, 'GripValue': 0.0, 'Thumbstick': {'x': 0.0, 'y': 0.0}, 'Position': {'x': 0.24589267373085022, 'y': 0.4867749810218811, 'z': 0.863879919052124}, 
 # 'Rotation': {'x': -0.07060858607292175, 'y': -0.5715464949607849, 'z': 0.6635912656784058, 'w': 0.4774887263774872}}}
 
-class Quest(Device):
+class QuestDualKinova3Teleop(Device):
     def __init__(
             self,
             env=None,
@@ -44,6 +29,7 @@ class Quest(Device):
         
         # Check robot models and see if there are multiple arms
         self.robot_interface = env
+        self.env_sim = self.env.env.sim
         self.robot_models = []
         self.bimanual = False
 
@@ -183,6 +169,14 @@ class Quest(Device):
     # 'Rotation': {'x': -0.07060858607292175, 'y': -0.5715464949607849, 'z': 0.6635912656784058, 'w': 0.4774887263774872}}}
 
     def get_controller_state(self):
+        """
+        In the development of dual arm teleoperation, we have different frames that the arm controllers operates
+        Therefore this function will perform simply the operation of getting all the delta actions
+        from the controller_frame / quest frame to the robosuite frame (rs_frame).
+        input2action() will then convert the rs frame delta actions to each arm's frame for their corresponding osc controllers.
+        Edited by: Kong 
+        On: 2025/04/05
+        """
         with self.controller_state_lock:
             new_controller_state = {}
             robot = self.env.robots[self.active_robot]
@@ -258,7 +252,7 @@ class Quest(Device):
 
                     ee_current_pos = self.robot_interface.robots[0].recent_ee_pose[self.active_arm].last
                     ee_curr_posit = np.array([ee_current_pos[0], ee_current_pos[1], ee_current_pos[2]])
-                    ee_curr_rot = robosuite_controller.ref_ori_mat.copy()
+                    ee_curr_rot = robosuite_controller.ref_ori_mat.copy() # it's in wd frame!! very nice
 
                     if self.initialize_pose:
                         # once trigger is (re)pressed, rebase controller's initial pose to current pose, and compute deltas using it
@@ -288,13 +282,13 @@ class Quest(Device):
                     k = np.array(k)
                     eR2 = -np.sin(theta/2)*k
 
-                    k, theta = tb.R2rot(dR_controller_rs)
-                    k = np.array(k)
-                    eR2_controller = -np.sin(theta/2)*k
+                    # k, theta = tb.R2rot(dR_controller_rs)
+                    # k = np.array(k)
+                    # eR2_controller = -np.sin(theta/2)*k
 
-                    k, theta = tb.R2rot(dR_ee_rs)
-                    k = np.array(k)
-                    eR2_ee = -np.sin(theta/2)*k
+                    # k, theta = tb.R2rot(dR_ee_rs)
+                    # k = np.array(k)
+                    # eR2_ee = -np.sin(theta/2)*k
 
                     if self.debug:
                         print("Initials")
@@ -305,16 +299,16 @@ class Quest(Device):
                     d_hand_rs_frame = self.R_rs_questwd @ d_hand_posit # I would hope that this turns it from the quest's frame to the robot's frame?
 
                     target_posit = self.ee_init_pos[controller] + d_hand_rs_frame # desired change in position from the robot's initial position
+                    delta_pos = target_posit - ee_curr_posit # delta between desired EE pose and current EE pose
+
 
                     if self.debug:
                         print("Targets")
                         print(f"DEBUG get_controller_state(): target_pos vs ee_init: {target_posit} {self.ee_init_pos[controller]}")
-                        # print(f"DEBUG get_controller_state(): target_rpy vs ee_init_rpy: {target_rpy} {self.ee_init_rpy[controller]}")
                         print(f"DEBUG get_controller_state(): ee_curr_rot vs ee_init_rot: \n{ee_curr_rot} \n{self.ee_init_rot[controller]}")
 
                     # Computing delta action for the robot.
-                    delta_pos = target_posit - ee_curr_posit # delta between desired EE pose and current EE pose
-
+                    
                     if self.debug:
                         print("Deltas")
                         print(f"DEBUG get_controller_state(): delta_pos vs ee_curr: {delta_pos} {ee_curr_posit}")
@@ -324,7 +318,7 @@ class Quest(Device):
                     new_controller_state[controller] = dict(
                         dpos=delta_pos,
                         # dpos=np.zeros(3),
-                        rotation=np.array([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]]),
+                        rotation=quest_curr_rot,
                         raw_drotation=eR2,
                         # raw_drotation=np.zeros(3),
                         grasp=int(self.grasp),
@@ -343,7 +337,7 @@ class Quest(Device):
                     # zero-ing delta actions; creates a minor gap b/w absolute and delta control
                     new_controller_state[controller] = dict(
                         dpos=np.zeros(3),
-                        rotation=np.array([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]]),
+                        rotation=np.eye(3),
                         raw_drotation=np.zeros(3),
                         grasp=int(self.grasp),
                         reset=self._reset_state,
@@ -376,89 +370,82 @@ class Quest(Device):
                             if reset is triggered, returns None
         """
         robot = self.env.robots[self.active_robot]
-        active_arm = self.active_arm
+        # active_arm = self.active_arm
 
-        state = self.get_controller_state()
-        # Note: Devices output rotation with x and z flipped to account for robots starting with gripper facing down
-        #       Also note that the outputted rotation is an absolute rotation, while outputted dpos is delta pos
-        #       Raw delta rotations from neutral user input is captured in raw_drotation (roll, pitch, yaw)
-        dpos, rotation, raw_drotation, grasp, reset = (
-            state["dpos"],
-            state["rotation"],
-            state["raw_drotation"],
-            state["grasp"],
-            state["reset"],
-        )
-
-        #### ensure that the rotation is in the robotsuite frame (+x in front, +y to the left, +z up) in robot's perspective!!!
-
-        if mirror_actions:
-            dpos[0] *= -1
-            dpos[1] *= -1
-            raw_drotation[0] *= -1
-            raw_drotation[1] *= -1
-
-        # If we're resetting, immediately return None
-        if reset:
-            return None
-
-        # Get controller reference
-        controller = robot.part_controllers[active_arm]
-        gripper_dof = robot.gripper[active_arm].dof
-
-        assert controller.name in ["OSC_POSE", "JOINT_POSITION"], "only supporting OSC_POSE and JOINT_POSITION for now"
-
-        # # process raw device inputs
-        # drotation = raw_drotation[[1, 0, 2]]
-        # # Flip z
-        # drotation[2] = -drotation[2]
-        # drotation = self.R_rs_questwd @ raw_drotation
-        drotation = raw_drotation
-
-        # Scale rotation for teleoperation (tuned for OSC) -- gains tuned for each device
-        dpos, drotation = self._postprocess_device_outputs(dpos, drotation)
-        # map 0 to -1 (open) and map 1 to 1 (closed)
-        grasp = 1 if grasp else -1
-
+        state = self.get_controller_state() # assume that both controllers have been updated
+        
         ac_dict = {}
         # populate delta actions for the arms
         for arm in robot.arms:
+            quest_hand = self._arm2controller[arm]
+            arm_norm_delta = np.zeros(6)
+            state = self.controller_state[quest_hand]
+            dpos, rotation, raw_drotation, grasp, reset = (
+                state["dpos"],
+                state["rotation"],
+                state["raw_drotation"],
+                state["grasp"],
+                state["reset"],
+            )
+            #### ensure that the rotation is in the robotsuite frame (+x in front, +y to the left, +z up) in robot's perspective!!!
+
+            if mirror_actions:
+                dpos[0] *= -1
+                dpos[1] *= -1
+                raw_drotation[0] *= -1
+                raw_drotation[1] *= -1
+
+            # If we're resetting, immediately return None
+            if reset:
+                return None
+            
+            #### Converting the delta actions to the robot's base frame
+            
+            # Get controller reference
+            controller = robot.part_controllers[arm]
+            # assert controller.name in ["OSC_POSE", "JOINT_POSITION"], "only supporting OSC_POSE and JOINT_POSITION for now"
+            assert controller.name == "OSC_POSE", "only supporting OSC_POSE for now"
+            
+            
+            drotation = raw_drotation
+
+            # Scale rotation for teleoperation (tuned for OSC) -- gains tuned for each device
+            dpos, drotation = self._postprocess_device_outputs(dpos, drotation)
+            arm_norm_delta = np.concatenate([dpos, drotation])
+            # map 0 to -1 (open) and map 1 to 1 (closed)
+            grasp = 1 if grasp else -1
+            
+            # If we're resetting, immediately return None
+            if reset:
+                return None
+
             # OSC keys
             arm_action = self.get_arm_action(
                 robot,
                 arm,
-                norm_delta=np.zeros(6),
+                norm_delta=arm_norm_delta,
             )
             ac_dict[f"{arm}_abs"] = arm_action["abs"]
             ac_dict[f"{arm}_delta"] = arm_action["delta"]
             ac_dict[f"{arm}_gripper"] = np.zeros(robot.gripper[arm].dof)
 
-        if robot.is_mobile:
-            base_mode = bool(state["base_mode"])
-            if base_mode is True:
-                arm_norm_delta = np.zeros(6)
-                base_ac = np.array([dpos[0], dpos[1], drotation[2]])
-                torso_ac = np.array([dpos[2]])
-            else:
-                arm_norm_delta = np.concatenate([dpos, drotation])
-                base_ac = np.zeros(3)
-                torso_ac = np.zeros(1)
+        ## TODO populate the base motion with the left hand joy stick motion
+        # if robot.is_mobile:
+        #     base_mode = bool(state["base_mode"])
+        #     if base_mode is True:
+        #         arm_norm_delta = np.zeros(6)
+        #         base_ac = np.array([dpos[0], dpos[1], drotation[2]])
+        #         torso_ac = np.array([dpos[2]])
+        #     else:
+        #         arm_norm_delta = np.concatenate([dpos, drotation])
+        #         base_ac = np.zeros(3)
+        #         torso_ac = np.zeros(1)
 
-            ac_dict["base"] = base_ac
-            # ac_dict["torso"] = torso_ac
-            ac_dict["base_mode"] = np.array([1 if base_mode is True else -1])
-        else:
-            arm_norm_delta = np.concatenate([dpos, drotation])
-
-        # populate action dict items for arm and grippers
-        arm_action = self.get_arm_action(
-            robot,
-            active_arm,
-            norm_delta=arm_norm_delta,
-        )
-        ac_dict[f"{active_arm}_abs"] = arm_action["abs"]
-        ac_dict[f"{active_arm}_delta"] = arm_action["delta"]
-        ac_dict[f"{active_arm}_gripper"] = np.array([grasp] * gripper_dof)
+        #     ac_dict["base"] = base_ac
+        #     # ac_dict["torso"] = torso_ac
+        #     ac_dict["base_mode"] = np.array([1 if base_mode is True else -1])
+        # else:
+        #     arm_norm_delta = np.concatenate([dpos, drotation])
 
         # clip actions between -1 and 1
         for (k, v) in ac_dict.items():
@@ -510,15 +497,15 @@ class Quest(Device):
     def approx_R_rs_questwd(self):
         # hard-coding the headset offset for now
         self.R_rs_questwd = np.array([ # robot_T_headset
-            [0, 0, -1],
-            [-1, 0, 0],
+            [0, 0, 1],
+            [1, 0, 0],
             [0, 1, 0]
         ])
         
         # rotate around z-axis for -90 degrees
         self.R_rs_questRctrl = np.array([ # robot_T_right_controller
-            [0, 1, 0],
-            [-1, 0, 0],
+            [0, -1, 0],
+            [1, 0, 0],
             [0, 0, 1]
         ])
 

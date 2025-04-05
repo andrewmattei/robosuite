@@ -302,7 +302,7 @@ if __name__ == "__main__":
                 obs = env.reset()
 
                 # reset the robot arm pose to home
-                results = tb.home_both_arms(left_base, right_base, "Home")
+                results = tb.home_both_arms(left_base, right_base, "Down")
 
                 # Setup rendering
                 cam_id = 0
@@ -362,7 +362,7 @@ if __name__ == "__main__":
                         all_prev_gripper_actions[device.active_robot][gripper_ac] = action_dict[gripper_ac]
 
                     env.step(env_action)
-                    sync_joint_pos_with_kortex(env, left_base, left_base_cyclic, right_base, right_base_cyclic)
+                    # sync_joint_pos_with_kortex(env, left_base, left_base_cyclic, right_base, right_base_cyclic)
       
                     env.render()
 
