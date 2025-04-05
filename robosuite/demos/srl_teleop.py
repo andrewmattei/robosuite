@@ -271,8 +271,8 @@ if __name__ == "__main__":
 
                 env.step(env_action)
 
-                with viewer.lock():
-                    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
+                # with viewer.lock():
+                #     viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
 
                 viewer.sync()
 
