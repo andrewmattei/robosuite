@@ -126,3 +126,5 @@ MUJOCO_LOG.TXT
 
 # private demonstration files
 robosuite/models/assets/demonstrations_private
+
+robosuite/devices/oculus_reader
