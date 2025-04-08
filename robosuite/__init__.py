@@ -13,6 +13,7 @@ from robosuite.environments.manipulation.two_arm_peg_in_hole import TwoArmPegInH
 from robosuite.environments.manipulation.two_arm_handover import TwoArmHandover
 from robosuite.environments.manipulation.two_arm_transport import TwoArmTransport
 from robosuite.environments.manipulation.bounce import Bounce
+from robosuite.environments.manipulation.dualkinova3_srl_env import DualKinova3SRLEnv
 
 from robosuite.environments import ALL_ENVIRONMENTS
 from robosuite.controllers import (

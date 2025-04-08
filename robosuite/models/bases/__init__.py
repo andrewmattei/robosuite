@@ -9,6 +9,7 @@ from .rethink_minimal_mount import RethinkMinimalMount
 from .null_mount import NullMount
 
 from .omron_mobile_base import OmronMobileBase
+from .omron_mobile_base_srl import OmronMobileBaseSRL
 from .null_mobile_base import NullMobileBase
 from .no_actuation_base import NoActuationBase
 from .floating_legged_base import FloatingLeggedBase
@@ -20,6 +21,7 @@ BASE_MAPPING = {
     "RethinkMinimalMount": RethinkMinimalMount,
     "NullMount": NullMount,
     "OmronMobileBase": OmronMobileBase,
+    "OmronMobileBaseSRL": OmronMobileBaseSRL,
     "NullMobileBase": NullMobileBase,
     "NoActuationBase": NoActuationBase,
     "FloatingLeggedBase": FloatingLeggedBase,

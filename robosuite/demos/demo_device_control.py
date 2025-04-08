@@ -104,7 +104,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--environment", type=str, default="Lift")
-    parser.add_argument("--robots", nargs="+", type=str, default="Panda", help="Which robot(s) to use in the env")
+    parser.add_argument("--robots", nargs="+", type=str, default="Kinova3", help="Which robot(s) to use in the env")
     parser.add_argument(
         "--config", type=str, default="default", help="Specified environment configuration if necessary"
     )
@@ -117,7 +117,7 @@ if __name__ == "__main__":
         default=None,
         help="Choice of controller. Can be generic (eg. 'BASIC' or 'WHOLE_BODY_MINK_IK') or json file (see robosuite/controllers/config for examples) or None to get the robot's default controller if it exists",
     )
-    parser.add_argument("--device", type=str, default="keyboard")
+    parser.add_argument("--device", type=str, default="quest")
     parser.add_argument("--pos-sensitivity", type=float, default=1.0, help="How much to scale position user inputs")
     parser.add_argument("--rot-sensitivity", type=float, default=1.0, help="How much to scale rotation user inputs")
     parser.add_argument(

@@ -18,7 +18,7 @@ import mujoco
 import time
 import matplotlib.pyplot as plt
 
-class Bounce(ManipulationEnv):
+class DualKinova3SRLEnv(ManipulationEnv):
     def __init__(
         self,
         robots,
@@ -122,13 +122,13 @@ class Bounce(ManipulationEnv):
         )
         # Initialize bounceball instead of lemon
         
-        # self.ball = LemonObject(
-        #     name="lemon",
-        # )
-
-        self.ball = BounceballObject(
-            name="bounceball", # has to match the model="bounceball" in the xml file
+        self.ball = LemonObject(
+            name="lemon",
         )
+
+        # self.ball = BounceballObject(
+        #     name="bounceball", # has to match the model="bounceball" in the xml file
+        # )
         
 
         # No need to modify collision properties as they're set in the object initialization
@@ -147,7 +147,7 @@ class Bounce(ManipulationEnv):
                 ensure_object_boundary_in_range=False,
                 ensure_valid_placement=True,
                 reference_pos=self.table_offset,
-                z_offset=1.0,  # 1 meter above the table
+                z_offset=0.0,  # 1 meter above the table
             )
 
         # task includes arena, robot, and objects of interest
@@ -204,7 +204,7 @@ class Bounce(ManipulationEnv):
         Resets simulation internal configurations.
         """
         super()._reset_internal()
-        
+
         # set the mobilebase joint torso height if it exists
         self.deterministic_reset = True
         active_robot = self.robots[0]
@@ -214,6 +214,12 @@ class Bounce(ManipulationEnv):
             # self.sim.data.qpos[self.sim.model.get_joint_qpos_addr(torso_name)] = self.init_torso_height
             # # also set the initial torso height in the robot model
             active_robot.init_torso_qpos = np.array([self.init_torso_height,])
+
+        ## Reset gripper positions to initial values
+        for arm in active_robot.arms:
+            gripper_idx = active_robot._ref_gripper_joint_pos_indexes[arm]
+            init_gripper_pos = active_robot.gripper[arm].init_qpos
+            self.sim.data.qpos[gripper_idx] = init_gripper_pos
 
         # Reset all object positions using initializer sampler if we're not directly loading from an xml
         if not self.deterministic_reset:
@@ -292,7 +298,7 @@ if __name__ == "__main__":
     # note default controller is in "robosuite/controllers/config/robots/default_dualkinova3.json"
     # which uses JOINT_POSITION part_controller for both arm in the HYBRID_MOBILE_BASE type.
     env = suite.make(
-        env_name="Bounce",
+        env_name="DualKinova3SRLEnv",
         robots="DualKinova3",
         # controller_configs=load_composite_controller_config(controller="BASIC"), 
         has_renderer=False,
@@ -347,7 +353,7 @@ if __name__ == "__main__":
     times = []
     forces = []
     z_positions = []
-    contact_object = 'bounceball_g0'
+    contact_object = 'lemon_g0'
 
     # ball_body_id = env.sim.model.body_name2id('bounceball_main')
     
@@ -399,14 +405,14 @@ if __name__ == "__main__":
                         total_force += normal_force
                 
                 # Record positions, times, and forces
-                ball_body_id = env.sim.model.body_name2id('bounceball_ball')
+                ball_body_id = env.sim.model.body_name2id('lemon_main')
                 z_positions.append(data.xpos[ball_body_id][2])
                 times.append(data.time)
                 forces.append(total_force)  # This now includes the spike
                 
                 # Viewer updates (unchanged)
-                with viewer.lock():
-                    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
+                # with viewer.lock():
+                #     viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
 
                 viewer.sync()
                 time_keeper.consume_step()

@@ -98,6 +98,7 @@ import robosuite as suite
 from robosuite import load_composite_controller_config
 from robosuite.controllers.composite.composite_controller import WholeBody
 from robosuite.wrappers import VisualizationWrapper
+from copy import deepcopy
 
 # get the path of robosuite
 repo_path = os.path.abspath(os.path.join(os.path.abspath(__file__), os.pardir, os.pardir))
@@ -162,7 +163,7 @@ if __name__ == "__main__":
         ignore_done=True,
         use_camera_obs=False,
         reward_shaping=True,
-        control_freq=20,
+        control_freq=29, # changing to 30 makes right arm move a little?
         hard_reset=False,
     )
 
@@ -244,8 +245,6 @@ if __name__ == "__main__":
                 # If action is none, then this a reset so we should break
                 if input_ac_dict is None:
                     break
-
-                from copy import deepcopy
 
                 action_dict = deepcopy(input_ac_dict)  # {}
                 # set arm actions
