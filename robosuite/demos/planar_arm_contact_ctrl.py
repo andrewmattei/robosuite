@@ -8,6 +8,7 @@ import os
 import casadi as cs
 from optimizing_max_jacobian import formulate_symbolic_dynamic_matrices, optimize_trajectory
 from optimizing_max_jacobian import match_trajectories, compute_jacobian
+import optimizing_max_jacobian as omj
 
 # Robot parameters (defined at the top of the file)
 LINK_MASS = 0.1/3  # kg
@@ -24,11 +25,30 @@ REF_TIMES = trajectory_data['times']
 REF_POSITIONS = trajectory_data['positions']
 REF_VELOCITIES = trajectory_data['velocities']
 
-opt_save_path = os.path.join(current_path, 'opt_trajectory.npy')
+traj_names = ["opt_trajectory.npy", "opt_trajectory_max_cartesian_accel.npy",
+              "time_opt_trajectory_max_cartesian_accel.npy"]
+##########################
+#######ADJUST HERE########
+play_traj = 2
+##########################
+opt_save_path = os.path.join(current_path, traj_names[play_traj])
 opt_trajectory_data = np.load(opt_save_path, allow_pickle=True).item()
 T_opt = opt_trajectory_data['T_opt']
 U_opt = opt_trajectory_data['U_opt']
 Z_opt = opt_trajectory_data['Z_opt']
+
+plot_save_path = os.path.join(current_path, 'plots', traj_names[play_traj].replace('.npy', '.png'))
+# Create plots directory if it doesn't exist
+if not os.path.exists(os.path.dirname(plot_save_path)):
+    os.makedirs(os.path.dirname(plot_save_path))
+
+# save to gif
+record_gif = False
+# TODO figure out how to render
+if record_gif:
+    gif_save_path = os.path.join(current_path, 'videos', traj_names[play_traj].replace('.npy', '.gif'))
+    if not os.path.exists(os.path.dirname(gif_save_path)):
+        os.makedirs(os.path.dirname(gif_save_path))
 
 robot_xml = f"""
 <mujoco model="3DOF_Planar_Robot">
@@ -83,6 +103,13 @@ robot_xml = f"""
 </mujoco>
 """
 
+def get_state(model, data, nbatch=1):
+  full_physics = mujoco.mjtState.mjSTATE_FULLPHYSICS
+  state = np.zeros((mujoco.mj_stateSize(model, full_physics),))
+  mujoco.mj_getState(model, data, state, full_physics)
+  return np.tile(state, (nbatch, 1))
+
+
 class RobotSystem:
     def __init__(self, model, data):
         self.model = model
@@ -112,6 +139,7 @@ class RobotSystem:
         self.viewer.cam.azimuth = 90
         self.viewer.cam.elevation = -90
         self.viewer.cam.lookat[:] = np.array([0.5, 0.0, 0.0])
+        
 
     def _compute_mass_matrix(self):
         """Compute mass matrix using mj_fullM."""
@@ -189,7 +217,7 @@ class RobotSystem:
         
         # Compute required torques using inverse dynamics
         tau = self.inverse_dynamics(ddq_des)
-        return tau
+        return tau, max_manip_dir
     
 
     def max_inertia_vel_tracking_ctrl(self, current_time, dM00_dq_fun):
@@ -239,7 +267,7 @@ class RobotSystem:
         tau_ref = tau_ref.flatten()
         
         K_q = 100.0
-        K_dq = 10.0
+        K_dq = 12.0
         # tau = tau_ref # TODO pure feedforward from opt based is not working due to lack of step size
         # TODO P on dq better than P on both q and dq
         tau = tau_ref+ K_dq * (dq_ref - self.data.qvel)
@@ -249,6 +277,7 @@ class RobotSystem:
 
 def main():
     track_traj = True
+    traj_names = ["reach_v_des", "reach_v_f"]
     # Initialize simulation
     model = mujoco.MjModel.from_xml_string(robot_xml)
     data = mujoco.MjData(model)
@@ -264,18 +293,29 @@ def main():
     jaco_pos = []
 
     motion_vector = []
+    accel_vector = []
 
     # CasaDi formulations
     m = [LINK_MASS, LINK_MASS, LINK_MASS]
     l = [LINK_LENGTH, LINK_LENGTH, LINK_LENGTH]
     r = [LINK_RADIUS, LINK_RADIUS, LINK_RADIUS]
-    q_sym = cs.MX.sym('q', 3)
-    dq_sym = cs.MX.sym('dq', 3)
+    q_sym = cs.SX.sym('q', 3)
+    dq_sym = cs.SX.sym('dq', 3)
+    tau_sym = cs.SX.sym('tau', 3)
     M, C, M_fun, C_fun = formulate_symbolic_dynamic_matrices(m, l, r, q_sym, dq_sym)
     dM00_dq = cs.jacobian(M[0, 0], q_sym)
     dM00_dq_fun = cs.Function('dM00_dq', [q_sym], [dM00_dq])
     J_p3 = compute_jacobian(q_sym, l)
     J_p3_fun = cs.Function('J_p3', [q_sym], [J_p3])
+
+    # compute cartesian acceleration expression
+    xdd_sym = omj.compute_symbolic_cartesian_acceleration(M, C, J_p3, q_sym, dq_sym, tau_sym)
+    xdd_fun = cs.Function('xdd', [q_sym, dq_sym, tau_sym], [xdd_sym])
+
+    # compute maximum acceleration direction
+    xdd_mag_sq = cs.dot(xdd_sym, xdd_sym)
+    dxdd_mag_dq = cs.jacobian(xdd_mag_sq, q_sym)
+    dxdd_mag_dq_fun = cs.Function('dxdd_dq', [q_sym, dq_sym, tau_sym], [dxdd_mag_dq])
 
     # maximum base joint inertia magnitude
     M_max = M_fun(np.zeros(3))
@@ -290,9 +330,14 @@ def main():
     # tau_upper = 10*np.ones(3)
 
     
-    # Set initial joint positions (optional)
-    q_start = np.array([0, np.pi*0.3, np.pi*0.5])
-    dq_start = np.zeros(model.nv)
+
+    if track_traj:
+        # Set initial joint positions based on reference trajectory
+        q_start = Z_opt[:3, 0]
+        dq_start = Z_opt[3:, 0]
+    else:
+        q_start = np.array([np.pi*0.5, -np.pi*0.5, -np.pi*0.5])
+        dq_start = np.zeros(model.nv)
     data.qpos[:] = q_start
     data.qvel[:] = dq_start
     
@@ -363,14 +408,19 @@ def main():
             
             if phase == "inertia":
                 tau, u_inc_iner = robot.max_inertia_vel_tracking_ctrl(data.time, dM00_dq_fun)
+                motion_vector.append(u_inc_iner)
                 M_curr = M_fun(data.qpos)
                 if M_curr[0, 0] > 0.98 * robot.M00_max:
                     phase = "velocity"
                     robot.u_prev = u_inc_iner # inform velocity phase about the direction of increasing inertia
             elif phase == "velocity":
-                tau = robot.max_manip_vel_tracking_ctrl(data.time)
+                tau, max_manip_dir = robot.max_manip_vel_tracking_ctrl(data.time)
+                motion_vector.append(max_manip_dir)
             elif phase == "optimal":
                 tau = robot.optimal_trajectory_tracking_ctrl(data.time, T_opt, U_opt, Z_opt)
+
+            # compute the cartisian acceleration
+            xdd = xdd_fun(data.qpos, data.qvel, tau)
 
             # Record data
             times.append(data.time)
@@ -380,9 +430,8 @@ def main():
             ee_velocities.append(np.linalg.norm(ee_vel))
             applied_torques.append(tau.copy())
             jaco_pos.append(jacp)
-            if not track_traj:
-                motion_vector = np.array(motion_vector)  # Shape: (N, 3)
-            
+            accel_vector.append(xdd)
+
             # Apply torques and step simulation
             data.ctrl[:] = tau.flatten()
             mujoco.mj_step(model, data)
@@ -465,11 +514,23 @@ def main():
         axes[4].grid(True)
     
     plt.tight_layout()
+    plt.savefig(plot_save_path, dpi=300, bbox_inches='tight')
+    print(f"Saved plot to: {plot_save_path}")
     plt.show()
 
 
+
     if not track_traj:
-        # Downsample based on simulation time: select one sample per 0.01 sec.
+        # Process acceleration vectors
+        accel_vector = np.array(accel_vector)  # Shape: (N, 2)
+        x = ee_positions[:, 0]
+        y = ee_positions[:, 1]
+        u = motion_vector[:, 0]
+        v = motion_vector[:, 1]
+        a_x = accel_vector[:, 0]
+        a_y = accel_vector[:, 1]
+
+        # Downsample based on simulation time: select one sample per 0.01 sec
         selected_indices = []
         last_time = -np.inf
         for i, t in enumerate(times):
@@ -477,41 +538,66 @@ def main():
                 selected_indices.append(i)
                 last_time = t
 
-        # Extract x and y positions from the end–effector positions
-        x = ee_positions[:, 0]
-        y = ee_positions[:, 1]
-        u = motion_vector[:, 0]
-        v = motion_vector[:, 1]
-
-        # Apply downsampling
+        # Apply downsampling to both motion and acceleration vectors
         x_down = x[selected_indices]
         y_down = y[selected_indices]
         u_down = u[selected_indices]
         v_down = v[selected_indices]
+        a_x_down = a_x[selected_indices]
+        a_y_down = a_y[selected_indices]
 
-        # Compute the horizontal axis range from the full trajectory
+        # Compute arrow length based on x-axis range
         x_min, x_max = np.min(x), np.max(x)
-        arrow_length = (x_max - x_min) / 20.0  # Arrow length is 1/20 of the x–axis range
+        arrow_length = (x_max - x_min) / 20.0
 
-        # Normalize the downsampled motion vectors
+        # Normalize motion vectors
         motion_mag = np.sqrt(u_down**2 + v_down**2)
-        motion_mag[motion_mag == 0] = 1.0  # Avoid division by zero
+        motion_mag[motion_mag == 0] = 1.0
         u_norm = u_down / motion_mag
         v_norm = v_down / motion_mag
 
-        # Scale the normalized vectors by arrow_length
+        # Normalize acceleration vectors
+        accel_mag = np.sqrt(a_x_down**2 + a_y_down**2)
+        accel_mag[accel_mag == 0] = 1.0
+        a_x_norm = a_x_down / accel_mag
+        a_y_norm = a_y_down / accel_mag
+
+        # Scale the normalized vectors
         u_plot = u_norm * arrow_length
         v_plot = v_norm * arrow_length
+        a_x_plot = a_x_norm * arrow_length
+        a_y_plot = a_y_norm * arrow_length
 
-        plt.figure(figsize=(8, 8))
-        plt.quiver(x_down, y_down, u_plot, v_plot, color='r', angles='xy',
+        # Create side-by-side plots
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+
+        # Plot motion vectors
+        ax1.quiver(x_down, y_down, u_plot, v_plot, color='r', angles='xy',
                 scale_units='xy', scale=1, width=0.005)
-        plt.plot(x, y, 'bo-', label="End-Effector Trajectory", markersize=arrow_length/5)
-        plt.xlabel('X Position (m)')
-        plt.ylabel('Y Position (m)')
-        plt.title('Motion Vector (u_inc_iner) at End-Effector')
-        plt.grid(True)
-        plt.legend()
+        ax1.plot(x, y, 'bo-', label="End-Effector Trajectory", markersize=arrow_length/5)
+        ax1.set_xlabel('X Position (m)')
+        ax1.set_ylabel('Y Position (m)')
+        ax1.set_title('Motion Vector (u_inc_iner)')
+        ax1.grid(True)
+        ax1.legend()
+
+        # Plot acceleration vectors
+        ax2.quiver(x_down, y_down, a_x_plot, a_y_plot, color='g', angles='xy',
+                scale_units='xy', scale=1, width=0.005)
+        ax2.plot(x, y, 'bo-', label="End-Effector Trajectory", markersize=arrow_length/5)
+        ax2.set_xlabel('X Position (m)')
+        ax2.set_ylabel('Y Position (m)')
+        ax2.set_title('Acceleration Vector')
+        ax2.grid(True)
+        ax2.legend()
+
+        # Make the plots have the same scale
+        ax1.set_aspect('equal')
+        ax2.set_aspect('equal')
+
+        plt.tight_layout()
+        # plt.savefig(plot_save_path, dpi=300, bbox_inches='tight')
+        # print(f"Saved plot to: {plot_save_path}")
         plt.show()
 
 if __name__ == "__main__":

@@ -15,3 +15,6 @@ robosuite-models==1.0.0
 
 # for USD export and rendering
 usd-core
+
+# for mujoco rendering
+imageio

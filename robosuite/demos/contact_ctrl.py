@@ -4,6 +4,12 @@ import mujoco
 from mujoco import viewer
 import matplotlib.pyplot as plt
 
+current_path = os.path.dirname(os.path.realpath(__file__))
+plot_save_path = os.path.join(current_path, 'plots', 'ball_contact_ctrl.png')
+# Create plots directory if it doesn't exist
+if not os.path.exists(os.path.dirname(plot_save_path)):
+    os.makedirs(os.path.dirname(plot_save_path))
+
 # Updated XML with a higher starting height for the ball (1.15 m instead of 1.0 m)
 XML = """
 <mujoco>
@@ -317,6 +323,8 @@ if __name__ == "__main__":
     axs[3].legend()
     
     plt.tight_layout()
+    plt.savefig(plot_save_path, dpi=300, bbox_inches='tight')
+    print(f"Saved plot to: {plot_save_path}")
     plt.show()
 
     # Save the trajectory data
@@ -329,4 +337,5 @@ if __name__ == "__main__":
     current_path = os.path.dirname(os.path.realpath(__file__))
     save_path = os.path.join(current_path, 'ball_trajectory.npy')
     np.save(save_path, trajectory_data)
+
 
