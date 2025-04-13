@@ -102,7 +102,7 @@
   </ros2_control>
   <joint name="base_joint" type="fixed">
     <!-- <origin rpy="-1.5708 0 0" xyz="0 -0.058 0.232548"/> -->
-    <origin rpy="-1.5708 0 0" xyz="0 0 0"/>
+    <origin rpy="0 0 0" xyz="0 0 0"/>
     <parent link="world"/>
     <child link="base_link"/>
   </joint>

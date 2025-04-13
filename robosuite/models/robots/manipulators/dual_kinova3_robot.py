@@ -43,6 +43,10 @@ class DualKinova3(ManipulatorModel):
             np.pi/2, np.pi/2, -np.pi/2, np.pi/2, 0.0, np.pi/6, np.pi/2,
             # Left arm joints
             np.pi/2, -np.pi/2, np.pi/2, -np.pi/2, 0.0, -np.pi/6, -np.pi/2
+            # # Right arm joints
+            # 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            # # Left arm joints
+            # 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0          
                          ])
 
     @property

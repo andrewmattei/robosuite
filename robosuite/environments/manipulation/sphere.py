@@ -143,8 +143,8 @@ class Sphere(ManipulationEnv):
             self.placement_initializer = UniformRandomSampler(
                 name="ObjectSampler",
                 mujoco_objects=self.ball,
-                x_range=[0.0, 0.0],
-                y_range=[0.41, 0.41],
+                x_range=[-0.56, -0.56],
+                y_range=[1.245, 1.245],
                 rotation=None,
                 ensure_object_boundary_in_range=False,
                 ensure_valid_placement=True,
@@ -291,10 +291,17 @@ class Sphere(ManipulationEnv):
         # Define a desired tangent orientation.
         # Here, we form a desired 4x4 homogeneous transformation.
         # (You should replace with the specific orientation your task requires.)
-        lhand_id = self.sim.model.body_name2id('robot0_left_hand')
+        lhand_id = self.sim.model.body_name2id('gripper0_left_eef')
         R_wd_lhand = self.sim.data.body_xmat[lhand_id].reshape(3, 3)
         R_desired = R_wd_lhand  # placeholder: identity rotation
         
+        body_names = ['world', 'table', 'left_eef_target', 'right_eef_target', 'robot0_base', 'mobilebase0_base', 'mobilebase0_fixed_support', 'mobilebase0_support', 'robot0_vention_upper_body', 'robot0_right_arm_fixed_base_link', 'robot0_right_shoulder_link', 'robot0_right_HalfArm1_Link', 'robot0_right_HalfArm2_Link', 'robot0_right_forearm_link', 'robot0_right_SphericalWrist1_Link', 'robot0_right_SphericalWrist2_Link', 'robot0_right_Bracelet_Link', 'robot0_right_hand', 'gripper0_right_robotiq_85_adapter_link', 'gripper0_right_eef', 'gripper0_right_left_outer_knuckle', 'gripper0_right_left_inner_finger', 'gripper0_right_left_inner_knuckle', 'gripper0_right_right_outer_knuckle', 'gripper0_right_right_inner_finger', 'gripper0_right_right_inner_knuckle', 'robot0_left_arm_fixed_base_link', 'robot0_left_shoulder_link', 'robot0_left_HalfArm1_Link', 'robot0_left_HalfArm2_Link', 'robot0_left_forearm_link', 'robot0_left_SphericalWrist1_Link', 'robot0_left_SphericalWrist2_Link', 'robot0_left_Bracelet_Link', 'robot0_left_hand', 'gripper0_left_robotiq_85_adapter_link', 'gripper0_left_eef', 'gripper0_left_left_outer_knuckle', 'gripper0_left_left_inner_finger', 'gripper0_left_left_inner_knuckle', 'gripper0_left_right_outer_knuckle', 'gripper0_left_right_inner_finger', 'gripper0_left_right_inner_knuckle', 'mobilebase0_wheeled_base', 'sphere_main']
+        for name in body_names:
+            body_id = self.sim.model.body_name2id(name)
+            p_wd = self.sim.data.body_xpos[body_id]
+            R_wd = self.sim.data.body_xmat[body_id].reshape(3, 3)
+            print(f"Body: {name}, Position: {p_wd}, Rotation:\n{R_wd}")
+
         T_wd_target = np.eye(4)
         T_wd_target[:3, :3] = R_desired
         T_wd_target[:3, 3] = target_pos
@@ -428,6 +435,7 @@ if __name__ == "__main__":
     # ball_body_id = env.sim.model.body_name2id('sphere_main')
     
     with mujoco.viewer.launch_passive(model, data) as viewer:
+        viewer.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
         # Set initial camera parameters
         viewer.cam.distance = 3.0
         viewer.cam.azimuth = 120

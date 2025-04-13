@@ -1,7 +1,21 @@
 import pinocchio as pin
 import numpy as np
-np.set_printoptions(precision=3, suppress=True)
+np.set_printoptions(precision=4, suppress=True, threshold=1e-4)
 from numpy.linalg import norm, solve
+
+def clean_and_print_matrix(matrix, threshold=1e-4):
+    """Clean small values from matrix and return string representation"""
+    if isinstance(matrix, pin.SE3):
+        # Convert SE3 to 4x4 numpy array 
+        matrix_array = np.eye(4)
+        matrix_array[:3,:3] = matrix.rotation
+        matrix_array[:3,3] = matrix.translation
+    else:
+        matrix_array = np.array(matrix)
+        
+    matrix_clean = matrix_array.copy()
+    matrix_clean[np.abs(matrix_clean) < threshold] = 0
+    return matrix_clean
 
 def compute_ik(urdf_path, ee_frame, target_pose, q0, max_iter=100, tol=1e-4):
     """
@@ -39,20 +53,27 @@ def compute_ik(urdf_path, ee_frame, target_pose, q0, max_iter=100, tol=1e-4):
     # return q
 
     oMdes = pin.SE3(target_pose[:3,:3], target_pose[:3,3])
-    print("oMdes:", oMdes)
+    print("oMdes: \n", clean_and_print_matrix(oMdes))
 
     model = pin.buildModelFromUrdf(urdf_path)
     data = model.createData()
 
     # Use the default Pinocchio solver (e.g., Levenberg-Marquardt) as a placeholder
     tool_frame_id = model.getFrameId(ee_frame)
-    joint_id = model.frames[tool_frame_id].parent
+    # joint_id = model.frames[tool_frame_id].parent
     joint_id = 7
     q = q0.copy()
     q_pin = standard_to_pinocchio(model, q)
     
-    T = get_end_effector_pose(model, data, tool_frame_id, q_pin)
-    print("T: \n", T)
+    pin.forwardKinematics(model,data,q_pin)
+
+    # for i in range(0, len(model.frames)):
+    #     pin.updateFramePlacement(model, data, i)
+    #     oMact = data.oMf[i]
+    #     print( "i:", i, "\noMact: \n", clean_and_print_matrix(oMact))    
+        # T = get_end_effector_pose(model, data, tool_frame_id, q_pin)
+        # print("i")
+        # print("T: \n", clean_and_print_matrix(T))
 
     pin.forwardKinematics(model,data,q_pin)
     # print("oMdes.translation:", oMdes.translation[i])
@@ -67,7 +88,7 @@ def compute_ik(urdf_path, ee_frame, target_pose, q0, max_iter=100, tol=1e-4):
     #     print( "i:", joint_id, "\noMact:", oMact)
 
     oMact = data.oMi[joint_id]
-    print( "i:", joint_id, "\noMact:", oMact)
+    print( "i:", joint_id, "\noMact: \n", clean_and_print_matrix(oMact))
 
     # roll, pitch, yaw = R_matrix_to_euler(oMdes.rotation)
     # print("oMdes\nRoll:", roll, "Pitch:", pitch, "Yaw:", yaw, '\n')
@@ -95,6 +116,7 @@ def compute_ik(urdf_path, ee_frame, target_pose, q0, max_iter=100, tol=1e-4):
         # pin.updateFramePlacement(model, data, tool_frame_id)
         # oMdes = data.oMi[7] # check that oMdes.actInv(data.oMi[joint_id]) works
         T = get_end_effector_pose(model, data, tool_frame_id, q_pin)
+        print("T: \n", clean_and_print_matrix(T))
         dMi_1 = oMdes.actInv(T)
         dMi_2 = data.oMi[joint_id].actInv(oMdes)
         
