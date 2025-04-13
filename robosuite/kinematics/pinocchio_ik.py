@@ -119,10 +119,12 @@ def compute_ik(urdf_path, ee_frame, target_pose, q0, max_iter=100, tol=1e-4):
         print("T: \n", clean_and_print_matrix(T))
         dMi_1 = oMdes.actInv(T)
         dMi_2 = data.oMi[joint_id].actInv(oMdes)
-        
-        dMi = dMi_1
-        # print('dMi_1:', dMi_1)
-        # print('dMi_2:', dMi_2)
+        dMi_3 = oMdes - T
+        print("dMi_1: \n", clean_and_print_matrix(dMi_1))
+        print("dMi_2: \n", clean_and_print_matrix(dMi_2))
+        print("dMi_2: \n", clean_and_print_matrix(dMi_3))
+
+        dMi = dMi_3
 
         err = pin.log(dMi).vector
         if norm(err) < eps:

@@ -287,20 +287,18 @@ class Sphere(ManipulationEnv):
     def _ik_left_arm_to_sphere_tangent(self, sphere_center, sphere_radius):
         # Compute the left-most point (assuming positive x is right)
         target_pos = sphere_center + np.array([-sphere_radius, 0, 0])
-        target_pos = sphere_center
+        # target_pos = sphere_center
+        
         # Define a desired tangent orientation.
         # Here, we form a desired 4x4 homogeneous transformation.
         # (You should replace with the specific orientation your task requires.)
-        lhand_id = self.sim.model.body_name2id('gripper0_left_eef')
-        R_wd_lhand = self.sim.data.body_xmat[lhand_id].reshape(3, 3)
-        R_desired = R_wd_lhand  # placeholder: identity rotation
-        
-        body_names = ['world', 'table', 'left_eef_target', 'right_eef_target', 'robot0_base', 'mobilebase0_base', 'mobilebase0_fixed_support', 'mobilebase0_support', 'robot0_vention_upper_body', 'robot0_right_arm_fixed_base_link', 'robot0_right_shoulder_link', 'robot0_right_HalfArm1_Link', 'robot0_right_HalfArm2_Link', 'robot0_right_forearm_link', 'robot0_right_SphericalWrist1_Link', 'robot0_right_SphericalWrist2_Link', 'robot0_right_Bracelet_Link', 'robot0_right_hand', 'gripper0_right_robotiq_85_adapter_link', 'gripper0_right_eef', 'gripper0_right_left_outer_knuckle', 'gripper0_right_left_inner_finger', 'gripper0_right_left_inner_knuckle', 'gripper0_right_right_outer_knuckle', 'gripper0_right_right_inner_finger', 'gripper0_right_right_inner_knuckle', 'robot0_left_arm_fixed_base_link', 'robot0_left_shoulder_link', 'robot0_left_HalfArm1_Link', 'robot0_left_HalfArm2_Link', 'robot0_left_forearm_link', 'robot0_left_SphericalWrist1_Link', 'robot0_left_SphericalWrist2_Link', 'robot0_left_Bracelet_Link', 'robot0_left_hand', 'gripper0_left_robotiq_85_adapter_link', 'gripper0_left_eef', 'gripper0_left_left_outer_knuckle', 'gripper0_left_left_inner_finger', 'gripper0_left_left_inner_knuckle', 'gripper0_left_right_outer_knuckle', 'gripper0_left_right_inner_finger', 'gripper0_left_right_inner_knuckle', 'mobilebase0_wheeled_base', 'sphere_main']
-        for name in body_names:
-            body_id = self.sim.model.body_name2id(name)
-            p_wd = self.sim.data.body_xpos[body_id]
-            R_wd = self.sim.data.body_xmat[body_id].reshape(3, 3)
-            print(f"Body: {name}, Position: {p_wd}, Rotation:\n{R_wd}")
+        lgripper_id = self.sim.model.body_name2id('gripper0_left_eef')
+        R_wd_lgripper = self.sim.data.body_xmat[lgripper_id].reshape(3, 3)
+        R_desired = R_wd_lgripper # placeholder: identity rotation
+
+        T_wd_gripper = np.eye(4)
+        T_wd_gripper[:3, :3] = R_desired
+        T_wd_gripper[:3, 3] = sphere_center
 
         T_wd_target = np.eye(4)
         T_wd_target[:3, :3] = R_desired
@@ -317,15 +315,16 @@ class Sphere(ManipulationEnv):
         
         print("T_wd_lbase:\n", T_wd_lbase)
         print("T_wd_target:\n", T_wd_target)
-        # to get R_lbase_target in lbase frame, we need to do the following:
-        R_lbase_lhand_in_wd = R_wd_lbase.T @ R_wd_lhand
-        R_lbase_lhand = R_wd_lbase.T @ R_lbase_lhand_in_wd @ R_wd_lbase
-        print("R_lbase_lhand:\n", R_lbase_lhand)
+
         T_lbase_target = np.linalg.inv(T_wd_lbase) @ T_wd_target # original
+        T_lbase_gripper = np.linalg.inv(T_wd_lbase) @ T_wd_gripper # original
         # T_lbase_target = np.linalg.inv(T_wd_target) @ T_wd_lbase # reverse
         print("T_lbase_target:\n", T_lbase_target)
 
-
+        # dMi_1 = T_lbase_target.actInv(T_lbase_gripper)
+        dMi_2 = T_lbase_target - T_lbase_gripper
+        # print("dMi_1:\n", dMi_1)
+        print("dMi_2:\n", dMi_2)
         # Path to the robot's URDF (update with your actual URDF file)
         urdf_path = "robosuite/models/assets/robots/dual_kinova3/leonardo.urdf"
         # Name of the left end-effector frame (adjust as needed)
@@ -445,8 +444,7 @@ if __name__ == "__main__":
         time_keeper = TimeKeeper(desired_freq=1/model.opt.timestep)
         
         # Set the targeting pose to be just a bit front of the initial robot hand position
-        left_hand_body_id = env.sim.model.body_name2id('robot0_left_hand')
-        left_hand_pos = data.xpos[left_hand_body_id]
+        left_gripper_body_id = env.sim.model.body_name2id('gripper0_left_eef')
 
         ball_body_id = env.sim.model.body_name2id('sphere_main')
         p_wd_ball = env.sim.data.body_xpos[ball_body_id]
@@ -455,15 +453,13 @@ if __name__ == "__main__":
         print("Ball position:", p_wd_ball)
         print("Ball rotation:\n", R_wd_ball)
 
-        p_wd_lhand = env.sim.data.body_xpos[left_hand_body_id]
-        
-        print("Bool: ", left_hand_pos == p_wd_lhand)
-        R_wd_lhand = env.sim.data.body_xmat[left_hand_body_id].reshape(3, 3)
+        p_wd_lhand = env.sim.data.body_xpos[left_gripper_body_id]
+        R_wd_lhand = env.sim.data.body_xmat[left_gripper_body_id].reshape(3, 3)
         print("Left hand position:", p_wd_lhand)
         print("Left hand rotation:\n", R_wd_lhand)
         # sphere_center = data.xpos[env.sim.model.body_name2id('sphere_main')]
         sphere_radius = 0.05
-        desired_joint = env._ik_left_arm_to_sphere_tangent(left_hand_pos, sphere_radius)
+        desired_joint = env._ik_left_arm_to_sphere_tangent(p_wd_lhand, sphere_radius)
         
         while viewer.is_running() and not env.done and data.time < simulation_time:
             if time_keeper.should_step():
