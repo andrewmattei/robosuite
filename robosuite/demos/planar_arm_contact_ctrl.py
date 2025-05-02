@@ -339,6 +339,7 @@ class RobotSystem:
         ee_positions = sim_data['ee_pos']
         ee_velocities = sim_data['ee_vel']
         applied_torques = sim_data['tau']
+        contact_forces = sim_data['contact_forces']
         impact_time = sim_data.get('impact_time', None)
         impact_vel = sim_data.get('impact_vel', None)
 
@@ -349,9 +350,9 @@ class RobotSystem:
             ee_vel_opt = sim_data['ee_vel_opt']
             ee_vx = ee_vel_opt[:, 0]
             ee_vy = ee_vel_opt[:, 1]
-            fig, axes = plt.subplots(5, 1, figsize=(8, 10))
+            fig, axes = plt.subplots(6, 1, figsize=(8, 14))
         else:
-            fig, axes = plt.subplots(3, 1, figsize=(6, 8))
+            fig, axes = plt.subplots(4, 1, figsize=(6, 10))
         
         # Color definitions
         colors = {
@@ -366,66 +367,87 @@ class RobotSystem:
             'joint3': '#bcbd22'       # olive
         }
 
+        # Contact Force plot (new)
+        axes[0].plot(times, contact_forces, color='red', label='Contact Force', linewidth=2)
+        # axes[0].set_title('Contact Force (y-direction)', fontsize=12, fontweight='bold')
+        axes[0].set_ylabel('Force (N)')
+        axes[0].grid(True, alpha=0.3)
+        if impact_time is not None:
+            axes[0].axvline(x=impact_time, color=colors['impact'], 
+                        linestyle='--', label='Impact')
+            peak_force = max(contact_forces)
+            peak_time = times[np.argmax(contact_forces)]
+            axes[0].annotate(f"Peak: {peak_force:.2f}N", 
+                            xy=(peak_time, peak_force), 
+                            xytext=(peak_time, peak_force+0.05),
+                            arrowprops=dict(facecolor='black', shrink=0.05))
+        axes[0].legend(frameon=True)
+
+
         # Position error plot
         ee_pos_opt_dense = omj.match_trajectories(times, T_opt, ee_pos_opt.T)[0]
         ee_pos_err = ee_positions[:,:2] - ee_pos_opt_dense.T
-        axes[0].plot(times, ee_pos_err[:, 0], color=colors['error_x'], 
+        axes[1].plot(times, ee_pos_err[:, 0], color=colors['error_x'], 
                     label='x', linewidth=2)
-        axes[0].plot(times, ee_pos_err[:, 1], color=colors['error_y'], 
+        axes[1].plot(times, ee_pos_err[:, 1], color=colors['error_y'], 
                     label='y', linewidth=2)
-        axes[0].set_title('End-Effector Position Error', fontsize=12, fontweight='bold')
-        axes[0].set_ylabel('Position Error (m)')
-        axes[0].grid(True, alpha=0.3)
-        axes[0].legend(frameon=True)
+        # axes[1].set_title('End-Effector Position Error', fontsize=12, fontweight='bold')
+        axes[1].set_ylabel('Position Error (m)')
+        axes[1].grid(True, alpha=0.3)
+        axes[1].legend(frameon=True)
 
         # Velocity magnitude plot
         ee_vel_mag = np.linalg.norm(ee_velocities, axis=1)
-        axes[1].plot(times, ee_vel_mag, color=colors['actual'], 
+        axes[2].plot(times, ee_vel_mag, color=colors['actual'], 
                     label='Actual', linewidth=2)
         if track_traj:
             ee_vel_opt_mag = np.linalg.norm(ee_vel_opt, axis=1)
-            axes[1].plot(T_opt, ee_vel_opt_mag, '--', color=colors['desired'], 
+            axes[2].plot(T_opt, ee_vel_opt_mag, '--', color=colors['desired'], 
                         label='Desired', linewidth=2)
+            axes[2].set_ylabel('Velocity Magnitude (m/s)')
             
             # Add desired impact velocity line
             imp_vel_des = np.linalg.norm(ee_vel_opt[-1])
-            axes[1].axhline(y=imp_vel_des, color=colors['target'], linestyle='--', 
+            axes[2].axhline(y=imp_vel_des, color=colors['target'], linestyle='--', 
                         label=f'imp_vel_des={imp_vel_des:.2f}')
             
             if impact_time is not None:
-                axes[1].axvline(x=impact_time, color=colors['impact'], 
+                axes[2].axvline(x=impact_time, color=colors['impact'], 
                             linestyle='--', label='Impact')
-                axes[1].annotate(f"Impact vel: {np.linalg.norm(impact_vel):.4f} m/s", 
+                axes[2].annotate(f"Impact vel: {np.linalg.norm(impact_vel):.4f} m/s", 
                             xy=(impact_time, np.linalg.norm(impact_vel)),
                             xytext=(impact_time, np.linalg.norm(impact_vel)+0.5),
                             arrowprops=dict(facecolor=colors['impact'], shrink=0.05))
 
         # Torque plot
         for i, color in enumerate([colors['joint1'], colors['joint2'], colors['joint3']]):
-            axes[2].plot(times, applied_torques[:, i], color=color, 
+            axes[3].plot(times, applied_torques[:, i], color=color, 
                         label=f'Joint {i+1}', linewidth=2)
+            axes[3].set_ylabel('Torque (Nm)')
             if track_traj:
-                axes[2].plot(T_opt, U_opt[i, :], '--', color=color, alpha=0.5)
+                axes[3].plot(T_opt, U_opt[i, :], '--', color=color, alpha=0.5)
 
         if track_traj:
             # Velocity components plots
-            axes[3].plot(times, ee_velocities[:, 0], color=colors['actual'], 
+            axes[4].plot(times, ee_velocities[:, 0], color=colors['actual'], 
                         label='Actual', linewidth=2)
-            axes[3].plot(T_opt, ee_vx, '--', color=colors['desired'], 
+            axes[4].plot(T_opt, ee_vx, '--', color=colors['desired'], 
                         label='Optimal', linewidth=2)
+            axes[4].set_ylabel('Velocity X (m/s)')
             
-            axes[4].plot(times, ee_velocities[:, 1], color=colors['actual'], 
+            axes[5].plot(times, ee_velocities[:, 1], color=colors['actual'], 
                         label='Actual', linewidth=2)
-            axes[4].plot(T_opt, ee_vy, '--', color=colors['desired'], 
+            axes[5].plot(T_opt, ee_vy, '--', color=colors['desired'], 
                         label='Optimal', linewidth=2)
+            axes[5].set_ylabel('Velocity Y (m/s)')
 
         # Update all subplot properties
         for ax in axes:
             ax.grid(True, alpha=0.3)
             ax.legend(frameon=True)
-            ax.set_xlabel('Time (s)')
+            # ax.set_xlabel('Time (s)')
             ax.tick_params(labelsize=10)
-
+        axes[-1].set_xlabel('Time (s)')
         plt.tight_layout()
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
@@ -821,6 +843,7 @@ def main():
 
     motion_vector = []
     accel_vector = []
+    contact_forces = []
 
     impact_time = None
     impact_pos = None
@@ -871,8 +894,11 @@ def main():
      # Simulation parameters
     if track_traj:
         simulation_time = T_opt[-1]
-        # model.opt.timestep = 0.001
-        model.opt.timestep = 0.001 # 20ms
+        # have different time step for simulation and recording
+        sim_dt = 0.00005  # simulation timestep: 0.05ms (20kHz)
+        record_dt = 0.001  # recording timestep: 1ms (1kHz)
+        record_steps = int(record_dt / sim_dt)  # record every N simulation steps
+        model.opt.timestep = sim_dt
         phase = "optimal"
         ee_vel_opt = np.zeros((len(T_opt), 2))
         ee_pos_opt = np.zeros((len(T_opt), 2))
@@ -909,109 +935,120 @@ def main():
             phase = "inertia"
     
     try:
+        step_count = 0
         while robot.viewer.is_running() and data.time < simulation_time*2:
 
             mujoco.mj_forward(robot.model, robot.data)
+            # compute the contact forces
+            # Record contact force on the end-effector
+            total_force = 0.0
+            for i in range(data.ncon):
+                force = np.zeros(6)
+                mujoco.mj_contactForce(model, data, i, force)
+                total_force += np.linalg.norm(force[:3])
 
-            # Get end-effector info
-            ee_pos = data.site_xpos[robot.ee_site_id].copy()
-            
-            # Get end-effector velocity
-            jacp = np.zeros((3, model.nv))
-            jacr = np.zeros((3, model.nv))
-            mujoco.mj_jacSite(model, data, jacp, jacr, robot.ee_site_id)
-            ee_vel = jacp @ data.qvel
-
-
-            jacp_cs = J_p3_fun(data.qpos)
-            ee_vel_cs = jacp_cs @ data.qvel
-            # print(f"ee_vel: {ee_vel}, ee_vel_cs: {ee_vel_cs}")
-            
-            # # Compute tracking control torques
-            # if track_traj:
-            #     # tau = robot.max_manip_vel_tracking_ctrl(data.time)
-            #     tau, u_inc_iner = robot.max_inertia_vel_tracking_ctrl(data.time, dM00_dq_fun)
-            # else:
-            #     tau = np.zeros(model.nv)
-
-            # M_eval, C_eval = compute_dynamics_matrices(M_fun, C_fun, data.qpos, data.qvel)
-            
-            if phase == "inertia":
-                tau, u_inc_iner = robot.max_inertia_vel_tracking_ctrl(data.time, dM00_dq_fun)
-                motion_vector.append(u_inc_iner)
-                M_curr = M_fun(data.qpos)
-                if M_curr[0, 0] > 0.98 * robot.M00_max:
-                    phase = "velocity"
-                    robot.u_prev = u_inc_iner # inform velocity phase about the direction of increasing inertia
-            elif phase == "velocity":
-                tau, max_manip_dir = robot.max_manip_vel_tracking_ctrl(data.time)
-                motion_vector.append(max_manip_dir)
-            elif phase == "optimal":
-                # tau = robot.optimal_trajectory_tracking_ctrl(data.time, T_opt, U_opt, Z_opt)
-                tau = robot.lqr_tracking_controller(data.time, T_opt, U_opt, Z_opt)
-                # catching the moment of impact
-                if data.ncon > 0 and not impact_flag:
-                    impact_flag = True
-                    impact_time = times[-1]
-                    impact_pos = ee_positions[-1]
-                    impact_vel = ee_velocities[-1]
-                    print(f"Impact detected at time {impact_time:.3f}s, position: {impact_pos}, velocity: {impact_vel}")
-                    phase = "post_impact"
-            elif phase == "post_impact":
-                # Apply post-impact control
-                # p_end = impact_pos.copy()
-                # p_end[1] += 0.3
-                # tau = robot.post_contact_pose_ctrl(p_end)
-                # # Check if the end-effector is close to the target position
-                # if np.linalg.norm(ee_pos - p_end) < 0.01:
-                #     print(f"End-effector reached target position at time {data.time:.3f}s")
-                #     break
-
-                # Apply post-impact control
-                tau = robot.post_contact_joint_ctrl(q_end)
-                error = np.linalg.norm(data.qpos - q_end)
-                # print(f"error: {error}")
-                # Check if the end-effector is close to the target position
-                if error < 0.2:
-                    print(f"End-effector reached target position at time {data.time:.3f}s")
-                    break
+            if step_count % record_steps == 0:
+                # Get end-effector info
+                ee_pos = data.site_xpos[robot.ee_site_id].copy()
+                
+                # Get end-effector velocity
+                jacp = np.zeros((3, model.nv))
+                jacr = np.zeros((3, model.nv))
+                mujoco.mj_jacSite(model, data, jacp, jacr, robot.ee_site_id)
+                ee_vel = jacp @ data.qvel
 
 
-            # compute the cartisian acceleration
-            if phase != "no_control":
-                xdd = xdd_fun(data.qpos, data.qvel, tau)
-                accel_vector.append(xdd)
-                applied_torques.append(tau.copy())
+                jacp_cs = J_p3_fun(data.qpos)
+                ee_vel_cs = jacp_cs @ data.qvel
+                # print(f"ee_vel: {ee_vel}, ee_vel_cs: {ee_vel_cs}")
+                
+                # # Compute tracking control torques
+                # if track_traj:
+                #     # tau = robot.max_manip_vel_tracking_ctrl(data.time)
+                #     tau, u_inc_iner = robot.max_inertia_vel_tracking_ctrl(data.time, dM00_dq_fun)
+                # else:
+                #     tau = np.zeros(model.nv)
 
-            # Record data
-            times.append(data.time)
-            joint_positions.append(data.qpos.copy())
-            joint_velocities.append(data.qvel.copy())
-            ee_positions.append(ee_pos)
-            ee_velocities.append(ee_vel)
-            jaco_pos.append(jacp)
+                # M_eval, C_eval = compute_dynamics_matrices(M_fun, C_fun, data.qpos, data.qvel)
+                
+                if phase == "inertia":
+                    tau, u_inc_iner = robot.max_inertia_vel_tracking_ctrl(data.time, dM00_dq_fun)
+                    motion_vector.append(u_inc_iner)
+                    M_curr = M_fun(data.qpos)
+                    if M_curr[0, 0] > 0.98 * robot.M00_max:
+                        phase = "velocity"
+                        robot.u_prev = u_inc_iner # inform velocity phase about the direction of increasing inertia
+                elif phase == "velocity":
+                    tau, max_manip_dir = robot.max_manip_vel_tracking_ctrl(data.time)
+                    motion_vector.append(max_manip_dir)
+                elif phase == "optimal":
+                    # tau = robot.optimal_trajectory_tracking_ctrl(data.time, T_opt, U_opt, Z_opt)
+                    tau = robot.lqr_tracking_controller(data.time, T_opt, U_opt, Z_opt)
+                    # catching the moment of impact
+                    if data.ncon > 0 and not impact_flag:
+                        impact_flag = True
+                        impact_time = times[-1]
+                        impact_pos = ee_positions[-1]
+                        impact_vel = ee_velocities[-1]
+                        print(f"Impact detected at time {impact_time:.3f}s, position: {impact_pos}, velocity: {impact_vel}")
+                        phase = "post_impact"
+                elif phase == "post_impact":
+                    # Apply post-impact control
+                    # p_end = impact_pos.copy()
+                    # p_end[1] += 0.3
+                    # tau = robot.post_contact_pose_ctrl(p_end)
+                    # # Check if the end-effector is close to the target position
+                    # if np.linalg.norm(ee_pos - p_end) < 0.01:
+                    #     print(f"End-effector reached target position at time {data.time:.3f}s")
+                    #     break
 
-            # Apply torques and step simulation
-            if not NO_CONTROL:
-                # Apply control torques
-                data.ctrl[:] = tau.flatten()
+                    # Apply post-impact control
+                    tau = robot.post_contact_joint_ctrl(q_end)
+                    error = np.linalg.norm(data.qpos - q_end)
+                    # print(f"error: {error}")
+                    # Check if the end-effector is close to the target position
+                    if error < 0.2:
+                        print(f"End-effector reached target position at time {data.time:.3f}s")
+                        break
+
+
+                # compute the cartisian acceleration
+                if phase != "no_control":
+                    xdd = xdd_fun(data.qpos, data.qvel, tau)
+                    accel_vector.append(xdd)
+                    applied_torques.append(tau.copy())
+
+                # Record data
+                times.append(data.time)
+                joint_positions.append(data.qpos.copy())
+                joint_velocities.append(data.qvel.copy())
+                ee_positions.append(ee_pos)
+                ee_velocities.append(ee_vel)
+                jaco_pos.append(jacp)
+                contact_forces.append(total_force)
+
+                # Apply torques and step simulation
+                if not NO_CONTROL:
+                    # Apply control torques
+                    data.ctrl[:] = tau.flatten()
+
             mujoco.mj_step(model, data)
-            # visualize the contact points
-            with robot.viewer.lock():
-                robot.viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
-            robot.viewer.sync()
+            step_count += 1
 
-            # Add video recording
-            text = f"Time: {data.time:.3f}s"
-            if impact_flag:
-                text += f" | Impact!"
-            robot.render_frame(text)
+            if step_count % record_steps == 0:
+                # visualize the contact points
+                with robot.viewer.lock():
+                    robot.viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
+                robot.viewer.sync()
 
-            data.ctrl[:] = tau
-            mujoco.mj_step(model, data)
-            
-            # Sleep to roughly match real time
-            time.sleep(model.opt.timestep * 5) # 10x slow motion
+                # Add video recording
+                text = f"Time: {data.time:.3f}s"
+                if impact_flag:
+                    text += f" | Impact!"
+                robot.render_frame(text)
+                
+                # Sleep to roughly match real time
+                time.sleep(record_dt * 5) # 10x slow motion
             
     except KeyboardInterrupt:
         pass
@@ -1039,6 +1076,7 @@ def main():
         'tau': applied_torques,
         'ee_pos': ee_positions,
         'ee_vel': ee_velocities,
+        'contact_forces': np.array(contact_forces),
         'impact_time': impact_time,
         'impact_pos': impact_pos,
         'impact_vel': impact_vel,
