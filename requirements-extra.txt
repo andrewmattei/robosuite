@@ -1,6 +1,9 @@
 # required for GymWrapper
 gymnasium
 
+# required for optimization
+casadi
+
 # macOS only
 hidapi
 
@@ -19,3 +22,6 @@ usd-core
 # for mujoco rendering
 imageio[ffmpeg]
 imageio[pyav]
+
+#for plotting
+matplotlib
