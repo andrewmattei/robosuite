@@ -6,9 +6,10 @@ import matplotlib.pyplot as plt
 import os
 
 import casadi as cs
-from optimizing_max_jacobian import formulate_symbolic_dynamic_matrices, optimize_trajectory
-from optimizing_max_jacobian import match_trajectories, compute_jacobian
-import optimizing_max_jacobian as omj
+from robosuite.demos.optimizing_max_jacobian import formulate_symbolic_dynamic_matrices, optimize_trajectory
+from robosuite.demos.optimizing_max_jacobian import match_trajectories, compute_jacobian
+import robosuite.demos.optimizing_max_jacobian as omj
+import imageio, cv2
 
 # Robot parameters (defined at the top of the file)
 LINK_MASS = 0.1/3  # kg
@@ -25,11 +26,16 @@ REF_TIMES = trajectory_data['times']
 REF_POSITIONS = trajectory_data['positions']
 REF_VELOCITIES = trajectory_data['velocities']
 
-traj_names = ["opt_trajectory.npy", "opt_trajectory_max_cartesian_accel.npy",
-              "time_opt_trajectory_max_cartesian_accel.npy"]
+NO_CONTROL = False
+
+traj_names = ["opt_trajectory.npy", 
+              "opt_trajectory_max_cartesian_accel.npy",
+              "time_opt_trajectory_max_cartesian_accel.npy",
+              "opt_trajectory_max_cartesian_accel_flex_pose.npy",
+              "../results/2025-04-20_19-10-20/sol_729.npy"]
 ##########################
 #######ADJUST HERE########
-play_traj = 2
+play_traj = 3
 ##########################
 opt_save_path = os.path.join(current_path, traj_names[play_traj])
 opt_trajectory_data = np.load(opt_save_path, allow_pickle=True).item()
@@ -63,9 +69,16 @@ robot_xml = f"""
     <material name="BaseColor" rgba="0.2 0.5 0.8 1" />
     <material name="JointColor" rgba="0.8 0.3 0.3 1" />
     <material name="LimbColor" rgba="0.1 0.1 0.1 1" />
+    <material name="TableColor" rgba="0.5 0.3 0.2 1" />
   </asset>
   
   <worldbody>
+    <!-- Add table surface -->
+    <!-- table surface is 0.05 below robot base-->
+    <body name="table" pos="0 -0.075 0" euler="0 0 0">
+      <geom name="table_surface" type="box" size="1.5 0.025 0.5" material="TableColor" />
+    </body>
+
     <geom name="ground" type="plane" pos="0 0 -0.5" size="4 4 0.1" material="grid"/>
     <light pos="0 0 3" dir="0 0 -1" directional="true"/>
     
@@ -90,6 +103,7 @@ robot_xml = f"""
           <geom name='geom3' type='cylinder' pos='0 0 0' material='JointColor' size='{LINK_RADIUS*1.1} {LINK_RADIUS*1.1}'/>
           <geom type='capsule' fromto='0 0 0 {LINK_LENGTH} 0 0' material='LimbColor' size='{LINK_RADIUS}'/>
           <site name="site_end_effector" pos='{LINK_LENGTH} 0 0'/>
+          <geom name="end_effector" type="sphere" pos="{LINK_LENGTH} 0 0" size="0.05" material="LimbColor" solref="0.01 0.1" condim="4" priority="1"/>
         </body>
       </body>
     </body>
@@ -111,26 +125,67 @@ def get_state(model, data, nbatch=1):
 
 
 class RobotSystem:
-    def __init__(self, model, data):
+    def __init__(self, model, data, gui=True, record_video=True, video_speed=0.2):
         self.model = model
         self.data = data
         self.nv = model.nv
+
+        self.gui_on = gui
         
         # Initialize viewer
-        self.viewer = viewer.launch_passive(model, data)
-        self._configure_viewer()
+        if self.gui_on:
+            self.viewer = viewer.launch_passive(model, data)
+            self._configure_viewer()
 
         self.ee_site_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "site_end_effector")
         
         # Control gains for trajectory tracking
-        self.Kp = 200.0  # proportional gain for velocity tracking
-        self.Kd = 0.5   # derivative gain for velocity tracking
+        self.kp_pose = 200.0  # proportional gain for velocity tracking
+
+        self.kp_joint = 5.0  # proportional gain for joint position tracking
+        self.kd_joint = 0.5   # derivative gain for joint velocity tracking
+        self.ki_joint = 5.0  # integral gain for joint position tracking
+        self.error_buffer_size = 10  # buffer for integral error
+        self.error_buffer = np.zeros((self.error_buffer_size, self.nv))
+        self.buffer_index = 0  # Current position in circular buffer
+        self.buffer_full = False  # Flag to track if buffer has been filled once
+
+        self.kp_post = 300.0
+        self.kd_post = 30.0
 
         #to fix a bug that if ee pass the y=0 line, calculation blow up
         self.u_prev = None
 
         # inertia mag
         self.M00_max = None
+
+        self.m = [LINK_MASS, LINK_MASS, LINK_MASS]
+        self.l = [LINK_LENGTH, LINK_LENGTH, LINK_LENGTH]
+        self.r = [LINK_RADIUS, LINK_RADIUS, LINK_RADIUS]
+
+        # video rendering 
+        # Initialize offscreen renderer for video recording
+        if record_video:
+            # Create shared camera settings
+            self.cam = mujoco.MjvCamera()
+            mujoco.mjv_defaultCamera(self.cam)
+            self._configure_camera()
+
+            self.renderer = mujoco.Renderer(model)
+            self._configure_camera()
+            self.record_fps = 30
+            self.video_speed = video_speed  # 0.1 means 10x slower than real-time
+            self.frame_interval = (1.0 / self.record_fps) * self.video_speed
+            self.last_frame_time = 0.0
+            video_save_path = os.path.join(current_path, 'videos', 
+                                         traj_names[play_traj].replace('.npy', '.mp4'))
+            if not os.path.exists(os.path.dirname(video_save_path)):
+                os.makedirs(os.path.dirname(video_save_path))
+            self.video_writer = imageio.get_writer(video_save_path, fps=self.record_fps)
+        else:
+            self.renderer = None
+            self.video_writer = None
+
         
 
     def _configure_viewer(self):
@@ -139,6 +194,25 @@ class RobotSystem:
         self.viewer.cam.azimuth = 90
         self.viewer.cam.elevation = -90
         self.viewer.cam.lookat[:] = np.array([0.5, 0.0, 0.0])
+
+        # Configure light to match camera position
+        # Get light ID (assuming there's only one light)
+        light_id = 0
+        # Position light relative to camera
+        self.model.light_pos[light_id] = np.array([0.5, 4.0, 4.0])
+        # Set light direction
+        self.model.light_dir[light_id] = np.array([0.0, -0.1, -0.9])
+        # Make sure light is directional
+        self.model.light_directional[light_id] = 1
+    
+
+    def _configure_camera(self):
+        self.cam.distance = 4.0
+        self.cam.azimuth = 90
+        self.cam.elevation = -90
+        self.cam.lookat[:] = np.array([0.2, 0.2, 0.0])
+        # self.cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
+
         
 
     def _compute_mass_matrix(self):
@@ -183,6 +257,181 @@ class RobotSystem:
             u_new = -np.sign(init_dir[2]) * u_new  # ensure that v points counterclockwise
         return u_new
     
+
+    def update_error_buffer(self, error):
+        """
+        Update error buffer using circular buffer pattern.
+        
+        Args:
+            error: Current error vector (shape: nv,)
+        Returns:
+            Weighted sum of integrated error
+        """
+        # Add new error to buffer
+        self.error_buffer[self.buffer_index] = error
+        
+        # Update buffer index
+        self.buffer_index = (self.buffer_index + 1) % self.error_buffer_size
+        self.buffer_full |= (self.buffer_index == 0)
+        
+        # Calculate integral term with temporal weighting
+        if self.buffer_full:
+            # Use exponential weighting for older errors
+            weights = np.exp(-np.arange(self.error_buffer_size)[::-1] * 0.1)
+            weights /= np.sum(weights)  # Normalize weights
+            integral_error = np.sum(self.error_buffer * weights[:, None], axis=0)
+        else:
+            # Use only filled portion of buffer
+            filled_size = self.buffer_index
+            weights = np.exp(-np.arange(filled_size)[::-1] * 0.1)
+            weights /= np.sum(weights)
+            integral_error = np.sum(self.error_buffer[:filled_size] * weights[:, None], axis=0)
+            
+        return integral_error
+    
+
+    def should_record_frame(self, current_time):
+        """Check if enough time has passed to record next frame"""
+        return current_time >= self.last_frame_time + self.frame_interval
+
+    def render_frame(self, text=None):
+        """Render current frame with playback speed indicator"""
+        if not self.video_writer or not self.renderer:
+            return
+
+        current_time = self.data.time
+        if self.should_record_frame(current_time):
+            self.renderer.update_scene(self.data, camera=self.cam)
+            img = self.renderer.render()
+            
+            if text is not None:
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                
+                # Add main text at top left
+                cv2.putText(img, text, (10, 30), font, 0.7, (255, 255, 255), 2)
+                
+                # Add speed text at bottom right
+                speed_text = f"{self.video_speed:.1f}x"
+                text_size = cv2.getTextSize(speed_text, font, 0.7, 2)[0]
+                text_x = img.shape[1] - text_size[0] - 10
+                text_y = img.shape[0] - 10
+                cv2.putText(img, speed_text, (text_x, text_y), 
+                           font, 0.7, (255, 255, 255), 2)
+                
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            
+            self.video_writer.append_data(img)
+            self.last_frame_time = current_time
+
+
+
+    def plot_results(self, sim_data, track_traj=True, save_path=None):
+        """
+        Plot simulation results.
+        
+        Args:
+            sim_data: Dictionary containing simulation data
+            track_traj: Boolean indicating if tracking optimal trajectory
+            save_path: Path to save the plot (optional)
+        """
+        times = sim_data['times']
+        ee_positions = sim_data['ee_pos']
+        ee_velocities = sim_data['ee_vel']
+        applied_torques = sim_data['tau']
+        impact_time = sim_data.get('impact_time', None)
+        impact_vel = sim_data.get('impact_vel', None)
+
+        if track_traj:
+            T_opt = sim_data['times_opt']
+            U_opt = sim_data['tau_opt']
+            ee_pos_opt = sim_data['ee_pos_opt']
+            ee_vel_opt = sim_data['ee_vel_opt']
+            ee_vx = ee_vel_opt[:, 0]
+            ee_vy = ee_vel_opt[:, 1]
+            fig, axes = plt.subplots(5, 1, figsize=(8, 10))
+        else:
+            fig, axes = plt.subplots(3, 1, figsize=(6, 8))
+        
+        # Color definitions
+        colors = {
+            'actual': '#1f77b4',      # bright blue
+            'desired': '#ff7f0e',     # bright orange
+            'error_x': '#2ca02c',     # bright green
+            'error_y': '#d62728',     # bright red
+            'impact': '#9467bd',      # purple
+            'target': '#8c564b',      # brown
+            'joint1': '#e377c2',      # pink
+            'joint2': '#7f7f7f',      # gray
+            'joint3': '#bcbd22'       # olive
+        }
+
+        # Position error plot
+        ee_pos_opt_dense = omj.match_trajectories(times, T_opt, ee_pos_opt.T)[0]
+        ee_pos_err = ee_positions[:,:2] - ee_pos_opt_dense.T
+        axes[0].plot(times, ee_pos_err[:, 0], color=colors['error_x'], 
+                    label='x', linewidth=2)
+        axes[0].plot(times, ee_pos_err[:, 1], color=colors['error_y'], 
+                    label='y', linewidth=2)
+        axes[0].set_title('End-Effector Position Error', fontsize=12, fontweight='bold')
+        axes[0].set_ylabel('Position Error (m)')
+        axes[0].grid(True, alpha=0.3)
+        axes[0].legend(frameon=True)
+
+        # Velocity magnitude plot
+        ee_vel_mag = np.linalg.norm(ee_velocities, axis=1)
+        axes[1].plot(times, ee_vel_mag, color=colors['actual'], 
+                    label='Actual', linewidth=2)
+        if track_traj:
+            ee_vel_opt_mag = np.linalg.norm(ee_vel_opt, axis=1)
+            axes[1].plot(T_opt, ee_vel_opt_mag, '--', color=colors['desired'], 
+                        label='Desired', linewidth=2)
+            
+            # Add desired impact velocity line
+            imp_vel_des = np.linalg.norm(ee_vel_opt[-1])
+            axes[1].axhline(y=imp_vel_des, color=colors['target'], linestyle='--', 
+                        label=f'imp_vel_des={imp_vel_des:.2f}')
+            
+            if impact_time is not None:
+                axes[1].axvline(x=impact_time, color=colors['impact'], 
+                            linestyle='--', label='Impact')
+                axes[1].annotate(f"Impact vel: {np.linalg.norm(impact_vel):.4f} m/s", 
+                            xy=(impact_time, np.linalg.norm(impact_vel)),
+                            xytext=(impact_time, np.linalg.norm(impact_vel)+0.5),
+                            arrowprops=dict(facecolor=colors['impact'], shrink=0.05))
+
+        # Torque plot
+        for i, color in enumerate([colors['joint1'], colors['joint2'], colors['joint3']]):
+            axes[2].plot(times, applied_torques[:, i], color=color, 
+                        label=f'Joint {i+1}', linewidth=2)
+            if track_traj:
+                axes[2].plot(T_opt, U_opt[i, :], '--', color=color, alpha=0.5)
+
+        if track_traj:
+            # Velocity components plots
+            axes[3].plot(times, ee_velocities[:, 0], color=colors['actual'], 
+                        label='Actual', linewidth=2)
+            axes[3].plot(T_opt, ee_vx, '--', color=colors['desired'], 
+                        label='Optimal', linewidth=2)
+            
+            axes[4].plot(times, ee_velocities[:, 1], color=colors['actual'], 
+                        label='Actual', linewidth=2)
+            axes[4].plot(T_opt, ee_vy, '--', color=colors['desired'], 
+                        label='Optimal', linewidth=2)
+
+        # Update all subplot properties
+        for ax in axes:
+            ax.grid(True, alpha=0.3)
+            ax.legend(frameon=True)
+            ax.set_xlabel('Time (s)')
+            ax.tick_params(labelsize=10)
+
+        plt.tight_layout()
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Saved plot to: {save_path}")
+        plt.show()
+    
     
     def max_manip_vel_tracking_ctrl(self, current_time):
         """
@@ -210,7 +459,7 @@ class RobotSystem:
         # Compute desired acceleration purely based on desired velocity
         vel_des = vel_ref * max_manip_dir
         vel_ee_current = jacp @ self.data.qvel
-        acc_des = self.Kp * (vel_des - vel_ee_current)
+        acc_des = self.kp_pose * (vel_des - vel_ee_current)
         lambda_sq = 0.01  # damping factor squared (tune as needed)
         J_inv_dls = jacp.T @ np.linalg.inv(jacp @ jacp.T + lambda_sq * np.eye(jacp.shape[0]))
         ddq_des = J_inv_dls @ acc_des
@@ -243,7 +492,7 @@ class RobotSystem:
 
         vel_des = -vel_ref * u_increasing_inertia_dir # negative sign to move towards increasing inertia
         vel_ee_current = jacp @ self.data.qvel
-        acc_des = self.Kp * (vel_des - vel_ee_current)
+        acc_des = self.kp_pose * (vel_des - vel_ee_current)
         lambda_sq = 0.01  # damping factor squared (tune as needed)
         J_inv_dls = jacp.T @ np.linalg.inv(jacp @ jacp.T + lambda_sq * np.eye(jacp.shape[0]))
         ddq_des = J_inv_dls @ acc_des
@@ -266,22 +515,300 @@ class RobotSystem:
         dq_ref = z_ref[3:].flatten()
         tau_ref = tau_ref.flatten()
         
-        K_q = 100.0
-        K_dq = 12.0
+        
         # tau = tau_ref # TODO pure feedforward from opt based is not working due to lack of step size
         # TODO P on dq better than P on both q and dq
-        tau = tau_ref+ K_dq * (dq_ref - self.data.qvel)
+        q_err = q_ref - self.data.qpos
+        dq_err = dq_ref - self.data.qvel
+        integral_err = self.update_error_buffer(q_err)
+
+        # PID control
+        tau = (tau_ref +
+                self.kp_joint * q_err +
+                self.ki_joint * integral_err +
+                self.kd_joint * dq_err)
+
+        # ddq_feedback = K_q * q_err + K_dq * dq_err
+        # tau_feedback = self.inverse_dynamics(ddq_feedback)
+        # tau = tau_ref + tau_feedback
+        
+        # TODO meth1: inverse dynamics pd control
+        # TODO meth2: optimization extension on the tail 0.01(same vel, panerate the table to where ever)
+        # TODO meth3: replace the feedback portion with LQR / MPC like control
+        # TODO meth4: use robust control from Umich
+        # TODO meth0: tune the gains
+        # no control (for now) if current time is greater than the trajectory time
+        if current_time > T_opt[-1]:
+            ## no control
+            tau = np.zeros(self.model.nv)
+            
         return tau
+    
+
+    def lqr_tracking_controller(self, current_time, T_opt, U_opt, Z_opt, horizon=50):
+        """
+        Real-time LQR controller that interpolates Z_opt and U_opt.
+        Assumes precomputed A_list, B_list with matching indices.
+        """
+        if self.linearization_cache is None:
+            raise RuntimeError("Call linearize_dynamics_along_trajectory before using this controller.")
+
+        A_list, B_list = self.linearization_cache
+
+        # Interpolate reference at current time
+        [u_ff, z_ref] = match_trajectories(current_time, T_opt, U_opt, T_opt, Z_opt)
+
+        # Find closest index in T_opt (for selecting linearization)
+        idx = np.searchsorted(T_opt, current_time)
+        idx = min(max(idx, 0), len(A_list) - 1)
+
+        # LQR backward recursion (short horizon)
+        # Q = np.diag([1e-2, 1e-2, 1e-2, 1e1, 1e1, 1e1])
+        # Q = np.diag([1e2, 1e2, 1e2, 1e0, 1e0, 1e0])
+        Q = np.eye(6)
+        R = np.eye(3) * 1e-5
+        P = Q.copy()
+        K_seq = []
+        
+
+        for k in reversed(range(horizon)):
+            if k == horizon - 1:
+                P = 10 * Q
+            j = min(idx + k, len(A_list) - 1)
+            A = A_list[j]
+            B = B_list[j]
+            K = np.linalg.inv(R + B.T @ P @ B) @ (B.T @ P @ A)
+            P = Q + A.T @ P @ (A - B @ K)
+            K_seq.insert(0, K)
+
+        K0 = K_seq[0]
+        current_z = np.hstack((self.data.qpos, self.data.qvel))
+        tau = u_ff.flatten() - K0 @ (current_z - z_ref.flatten())
+
+        if current_time > T_opt[-1]:
+            ## no control
+            tau = np.zeros(self.model.nv)
+
+        return tau
+    
+
+    def post_contact_pose_ctrl(self, p_end):
+        """
+        Compute control torques for post-impact position control.
+        
+        Args:
+            p_end: Target end-effector position [x, y]
+            ee_pos: Current end-effector position
+            ee_vel: Current end-effector velocity
+            jacp: Current end-effector Jacobian
+        Returns:
+            tau: Control torques
+        """
+        # Obtain the jacobian of the end effector
+        site_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "site_end_effector")
+        jacp = np.zeros((3, self.model.nv))
+        jacr = np.zeros((3, self.model.nv))
+        mujoco.mj_jacSite(self.model, self.data, jacp, jacr, site_id)
+        lambda_sq = 0.01  # damping factor squared (tune as needed)
+        J_inv_dls = jacp.T @ np.linalg.inv(jacp @ jacp.T + lambda_sq * np.eye(jacp.shape[0]))
+        
+        # Compute position error (only x,y components)
+        ee_pos = self.data.site_xpos[site_id].copy()
+        # padding the z component if needed
+        if len(p_end) == 2:
+            p_end = np.array([p_end[0], p_end[1], ee_pos[2]])
+        pos_err = p_end - ee_pos
+
+        # compute ee_vel
+        ee_vel = jacp @ self.data.qvel
+        
+        # PD control in operational space
+        acc_des = (self.kp_post * pos_err - 
+                  self.kd_post * ee_vel)
+        
+        
+        # Convert to joint accelerations
+        ddq_des = J_inv_dls @ acc_des
+        
+        # Compute required torques using inverse dynamics
+        tau = self.inverse_dynamics(ddq_des)
+        
+        # Clip torques to limits
+        # tau = np.clip(tau, self.model.actuator_ctrlrange[:, 0], 
+        #              self.model.actuator_ctrlrange[:, 1])
+        tau = np.clip(tau, -1, 1)
+        
+        return tau
+    
+
+    def post_contact_joint_ctrl(self, q_end):
+        """
+        Compute control torques for post-impact joint position control.
+        
+        Args:
+            q_end: Target joint position [q1, q2, q3]
+        Returns:
+            tau: Control torques
+        """
+        # Compute position error
+        q_err = q_end - self.data.qpos
+        
+        # PD control in joint space
+        ddq_des = (self.kp_post * q_err - 
+                  self.kd_post * self.data.qvel)
+        
+        # Compute required torques using inverse dynamics
+        tau = self.inverse_dynamics(ddq_des)
+        
+        # Clip torques to limits
+        # tau = np.clip(tau, self.model.actuator_ctrlrange[:, 0], 
+        #              self.model.actuator_ctrlrange[:, 1])
+        tau = np.clip(tau, -1, 1)
+        
+        return tau
+        
+
+    def run_simulation_offscreen(self, solution, sim_dt = 5e-5):
+        """
+        Run the simulation headlessly using the optimal trajectory.
+        Returns a dict of logged data suitable for saving to HDF5 or .mat.
+        """
+        model = self.model
+        data = self.data
+
+        num_steps = solution['q'].shape[1]
+        T = solution['t_f']
+        Z_opt = np.vstack((solution['q'], solution['dq']))
+        # U_opt = np.hstack((solution['tau'], np.zeros((3,1)))) # !!bad shouldn't pad with zero
+        U_opt = np.hstack((solution['tau'], solution['tau'][:, -1:]))  # pad with last value
+        T_opt = np.linspace(0, T, num_steps)
+        # compute the lqr linearization list
+        self.linearization_cache = omj.linearize_dynamics_along_trajectory(
+            T_opt, U_opt, Z_opt, self.m, self.l, self.r)
+
+        # rollout the trajectories in p and v of the end effector
+        ee_pos_opt = np.zeros((num_steps, 2))
+        ee_vel_opt = np.zeros((num_steps, 2))
+        ee_vel_mag_opt = np.zeros(num_steps)
+
+        ee_vel = np.zeros
+        for k in range(num_steps):
+            q_opt = Z_opt[:3, k]
+            dq_opt = Z_opt[3:, k]
+            ee_pos_opt[k, :] = omj.end_effector_position(q_opt, self.l).full().flatten() # convert to numpy array
+            jacp_opt = omj.compute_jacobian(q_opt, self.l)
+            ee_vel_opt[k, :] = cs.DM(jacp_opt @ dq_opt).full().flatten()
+            ee_vel_mag_opt[k] = np.linalg.norm(ee_vel_opt[k, :])
+
+
+        # Set initial conditions
+        data.qpos[:] = Z_opt[:3, 0]
+        data.qvel[:] = Z_opt[3:, 0]
+        data.time = 0.0
+        self.error_buffer = np.zeros((self.error_buffer_size, self.nv))
+        self.buffer_index = 0  # Current position in circular buffer
+        self.buffer_full = False  # Flag to track if buffer has been filled once
+
+
+        model.opt.timestep = sim_dt
+        sim_duration = T_opt[-1]
+
+        times, q_log, dq_log, tau_log = [], [], [], []
+        ee_pos_log, ee_vel_log, xdd_log = [], [], []
+
+        impact_flag = False
+
+        impact_time = None
+        impact_pos = None
+        impact_vel = None
+
+        self.u_prev = None
+
+        while not impact_flag and data.time < sim_duration*1.5:
+            mujoco.mj_forward(model, data)
+
+            site_id = self.ee_site_id
+            ee_pos = data.site_xpos[site_id].copy()
+            jacp = np.zeros((3, model.nv))
+            jacr = np.zeros((3, model.nv))
+            mujoco.mj_jacSite(model, data, jacp, jacr, site_id)
+            ee_vel = jacp @ data.qvel
+
+            # tau = self.optimal_trajectory_tracking_ctrl(data.time, T_opt, U_opt, Z_opt)
+            tau = self.lqr_tracking_controller(data.time, T_opt, U_opt, Z_opt)
+
+            tau = np.asarray(tau).flatten()
+
+            # log impact
+            if data.ncon > 0 and not impact_flag:
+                impact_flag = True
+                impact_time = times[-1]
+                impact_pos = ee_pos_log[-1]
+                impact_vel = ee_vel_log[-1]
+
+            # Record logs
+            times.append(data.time)
+            q_log.append(data.qpos.copy())
+            dq_log.append(data.qvel.copy())
+            tau_log.append(tau.copy())
+            ee_pos_log.append(ee_pos[:2])  # only X-Y plane
+            ee_vel_log.append(ee_vel[:2])
+
+            data.ctrl[:] = tau
+            mujoco.mj_step(model, data)
+            if self.gui_on:
+                self.viewer.sync()
+                time.sleep(model.opt.timestep * 5)
+
+        q_log = np.array(q_log)
+        dq_log = np.array(dq_log)
+        tau_log = np.array(tau_log)
+        ee_pos_log = np.array(ee_pos_log)
+        ee_vel_log = np.array(ee_vel_log)
+        xdd_log = np.array(xdd_log)
+        times = np.array(times)
+
+        if self.gui_on:
+            self.viewer.close()
+
+        return {
+            'times': times,
+            'q': q_log,
+            'dq': dq_log,
+            'tau': tau_log,
+            'ee_pos': ee_pos_log,
+            'ee_vel': ee_vel_log,
+            'q_opt': Z_opt[:3, :],
+            'dq_opt': Z_opt[3:, :],
+            'tau_opt': U_opt,
+            'times_opt': T_opt,
+            'ee_pos_opt': ee_pos_opt,
+            'ee_vel_opt': ee_vel_opt,
+            'ee_vel_mag_opt': ee_vel_mag_opt,
+            'final_pose': Z_opt[:3, -1],
+            'final_position': ee_pos_opt[-1],
+            'final_velocity': ee_vel_opt[-1],
+            'impact_time': impact_time,
+            'impact_pos': impact_pos,
+            'impact_vel': impact_vel,
+        }
+
         
 
 
 def main():
-    track_traj = True
-    traj_names = ["reach_v_des", "reach_v_f"]
+    if NO_CONTROL:
+        track_traj = False
+    else:
+        track_traj = True
     # Initialize simulation
     model = mujoco.MjModel.from_xml_string(robot_xml)
     data = mujoco.MjData(model)
     robot = RobotSystem(model, data)
+
+    # Setup video recording
+
+
     
     # Data recording
     times = []
@@ -294,6 +821,10 @@ def main():
 
     motion_vector = []
     accel_vector = []
+
+    impact_time = None
+    impact_pos = None
+    impact_vel = None
 
     # CasaDi formulations
     m = [LINK_MASS, LINK_MASS, LINK_MASS]
@@ -321,15 +852,7 @@ def main():
     M_max = M_fun(np.zeros(3))
     robot.M00_max = M_max[0, 0]
 
-    # # Bounds
-    # q_lower = -4/5*np.pi * np.ones(3)
-    # q_upper = 4/5*np.pi * np.ones(3)
-    # dq_lower = -2*np.pi * np.ones(3)
-    # dq_upper = 2*np.pi * np.ones(3)
-    # tau_lower = -10*np.ones(3)
-    # tau_upper = 10*np.ones(3)
-
-    
+    impact_flag = False
 
     if track_traj:
         # Set initial joint positions based on reference trajectory
@@ -344,42 +867,49 @@ def main():
     # Desired joint accelerations (example: trying to hold position)
     # ddq_des = np.zeros(model.nv)
 
-    # # solve for optimal trajectory
-    # T = 2.0
-    # N = 30
-    # v_ee_des = 20.0 # m/s
-    # # Call the optimizer
-    # solution = optimize_trajectory(q_start, dq_start, v_ee_des, m, l, r,
-    #                                q_lower, q_upper, dq_lower, dq_upper,
-    #                                tau_lower, tau_upper,
-    #                                T, N,
-    #                                weight_v=1.0, weight_dM=0.1, weight_tau=0.001)
-    # num_steps = solution['q'].shape[1]
-    # Z_opt = np.vstack((solution['q'], solution['dq']))
-    # U_opt = np.hstack((solution['tau'], np.zeros((3,1)))) # match shape of input to time
-    # T_opt = np.linspace(0, T, num_steps)
-
 
      # Simulation parameters
     if track_traj:
         simulation_time = T_opt[-1]
-        model.opt.timestep = 0.00005
+        # model.opt.timestep = 0.001
+        model.opt.timestep = 0.001 # 20ms
         phase = "optimal"
-        ee_velocity_cs = []
+        ee_vel_opt = np.zeros((len(T_opt), 2))
+        ee_pos_opt = np.zeros((len(T_opt), 2))
+        ee_vx = []
+        ee_vy = []
         for k in range(len(T_opt)):
             q_opt = Z_opt[:3, k]
             dq_opt = Z_opt[3:, k]
-            jacp_opt = J_p3_fun(q_opt)
-            ee_vel_opt = jacp_opt @ dq_opt
-            ee_velocity_cs.append(np.linalg.norm(ee_vel_opt))
+            ee_pos_opt[k, :] = omj.end_effector_position(q_opt, l).full().flatten() # convert to numpy array
+            jacp_opt = omj.compute_jacobian(q_opt, l)
+            ee_vel_opt[k, :] = cs.DM(jacp_opt @ dq_opt).full().flatten()
+            ee_vx.append(ee_vel_opt[k, 0])
+            ee_vy.append(ee_vel_opt[k, 1])
+        ee_vx = np.array(ee_vx).ravel()
+        ee_vy = np.array(ee_vy).ravel()
+
+        # compute the lqr linearization list
+        robot.linearization_cache = omj.linearize_dynamics_along_trajectory(
+            T_opt, U_opt, Z_opt, m, l, r)
+        
+        # choose 0.80/1 point of the trajectory to be the q_end for post impact
+        q_end = Z_opt[:3, int(len(T_opt) *0.80)]
+        
+
     else:
-        simulation_time = REF_TIMES[-1]
-        model.opt.timestep = REF_TIMES[1] - REF_TIMES[0] # follow the trajectory time step
-        # phase management: "inertia" -> "velocity"
-        phase = "inertia"
+        if NO_CONTROL:
+            simulation_time = 30  #sec
+            model.opt.timestep = 0.001 # 1ms
+            phase = "no_control"
+        else:
+            simulation_time = REF_TIMES[-1]
+            model.opt.timestep = REF_TIMES[1] - REF_TIMES[0] # follow the trajectory time step
+            # phase management: "inertia" -> "velocity"
+            phase = "inertia"
     
     try:
-        while robot.viewer.is_running() and data.time < simulation_time:
+        while robot.viewer.is_running() and data.time < simulation_time*2:
 
             mujoco.mj_forward(robot.model, robot.data)
 
@@ -417,34 +947,80 @@ def main():
                 tau, max_manip_dir = robot.max_manip_vel_tracking_ctrl(data.time)
                 motion_vector.append(max_manip_dir)
             elif phase == "optimal":
-                tau = robot.optimal_trajectory_tracking_ctrl(data.time, T_opt, U_opt, Z_opt)
+                # tau = robot.optimal_trajectory_tracking_ctrl(data.time, T_opt, U_opt, Z_opt)
+                tau = robot.lqr_tracking_controller(data.time, T_opt, U_opt, Z_opt)
+                # catching the moment of impact
+                if data.ncon > 0 and not impact_flag:
+                    impact_flag = True
+                    impact_time = times[-1]
+                    impact_pos = ee_positions[-1]
+                    impact_vel = ee_velocities[-1]
+                    print(f"Impact detected at time {impact_time:.3f}s, position: {impact_pos}, velocity: {impact_vel}")
+                    phase = "post_impact"
+            elif phase == "post_impact":
+                # Apply post-impact control
+                # p_end = impact_pos.copy()
+                # p_end[1] += 0.3
+                # tau = robot.post_contact_pose_ctrl(p_end)
+                # # Check if the end-effector is close to the target position
+                # if np.linalg.norm(ee_pos - p_end) < 0.01:
+                #     print(f"End-effector reached target position at time {data.time:.3f}s")
+                #     break
+
+                # Apply post-impact control
+                tau = robot.post_contact_joint_ctrl(q_end)
+                error = np.linalg.norm(data.qpos - q_end)
+                # print(f"error: {error}")
+                # Check if the end-effector is close to the target position
+                if error < 0.2:
+                    print(f"End-effector reached target position at time {data.time:.3f}s")
+                    break
+
 
             # compute the cartisian acceleration
-            xdd = xdd_fun(data.qpos, data.qvel, tau)
+            if phase != "no_control":
+                xdd = xdd_fun(data.qpos, data.qvel, tau)
+                accel_vector.append(xdd)
+                applied_torques.append(tau.copy())
 
             # Record data
             times.append(data.time)
             joint_positions.append(data.qpos.copy())
             joint_velocities.append(data.qvel.copy())
             ee_positions.append(ee_pos)
-            ee_velocities.append(np.linalg.norm(ee_vel))
-            applied_torques.append(tau.copy())
+            ee_velocities.append(ee_vel)
             jaco_pos.append(jacp)
-            accel_vector.append(xdd)
 
             # Apply torques and step simulation
-            data.ctrl[:] = tau.flatten()
+            if not NO_CONTROL:
+                # Apply control torques
+                data.ctrl[:] = tau.flatten()
             mujoco.mj_step(model, data)
+            # visualize the contact points
+            with robot.viewer.lock():
+                robot.viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
             robot.viewer.sync()
+
+            # Add video recording
+            text = f"Time: {data.time:.3f}s"
+            if impact_flag:
+                text += f" | Impact!"
+            robot.render_frame(text)
+
+            data.ctrl[:] = tau
+            mujoco.mj_step(model, data)
             
             # Sleep to roughly match real time
-            time.sleep(model.opt.timestep)
+            time.sleep(model.opt.timestep * 5) # 10x slow motion
             
     except KeyboardInterrupt:
         pass
     
     finally:
         robot.viewer.close()
+        # Close video writer
+        if robot.video_writer:
+            robot.video_writer.close()
         
     # Plot results
     joint_positions = np.array(joint_positions)
@@ -456,68 +1032,23 @@ def main():
     ee_positions = np.array(ee_positions)
     ee_velocities = np.array(ee_velocities)
     applied_torques = np.array(applied_torques)
-    if not track_traj:
-        motion_vector = np.array(motion_vector)  # Shape: (N, 3)
+    sim_data = {
+        'times': times,
+        'joint_positions': joint_positions,
+        'joint_velocities': joint_velocities,
+        'tau': applied_torques,
+        'ee_pos': ee_positions,
+        'ee_vel': ee_velocities,
+        'impact_time': impact_time,
+        'impact_pos': impact_pos,
+        'impact_vel': impact_vel,
+        'times_opt': T_opt,
+        'tau_opt': U_opt,
+        'ee_pos_opt': ee_pos_opt,
+        'ee_vel_opt': ee_vel_opt,
+    }
     
-    if track_traj:
-        fig, axes = plt.subplots(5, 1, figsize=(10, 16))
-    else:
-        fig, axes = plt.subplots(3, 1, figsize=(10, 12))
-    
-    # End-effector position
-    axes[0].plot(times, ee_positions[:, 0], label='x', linewidth=2)
-    axes[0].plot(times, ee_positions[:, 1], label='y', linewidth=2)
-    axes[0].plot(times, ee_positions[:, 2], label='z', linewidth=2)
-    axes[0].set_title('End-Effector Position')
-    axes[0].set_ylabel('Position (m)')
-    axes[0].grid(True)
-    axes[0].legend()
-    
-    # End-effector velocity magnitude
-    axes[1].plot(times, ee_velocities, label='Actual', linewidth=2)
-    if track_traj:
-        # Add reference velocity if tracking trajectory
-        axes[1].plot(T_opt, ee_velocity_cs, '--', label='Desired', linewidth=2)
-    else:
-        ref_velocities = [np.linalg.norm(vel) for vel in REF_VELOCITIES]
-        axes[1].plot(REF_TIMES, ref_velocities, '--', label='Desired', linewidth=2)
-    axes[1].set_title('End-Effector Velocity Magnitude')
-    axes[1].set_ylabel('Velocity (m/s)')
-    axes[1].grid(True)
-    axes[1].legend()
-    
-    # Applied torques
-    for i in range(3):
-        axes[2].plot(times, applied_torques[:, i], label=f'Joint {i+1}')
-        if track_traj:
-            axes[2].plot(T_opt, U_opt[i, :], '--')
-    axes[2].set_title('Applied Torques')
-    axes[2].set_ylabel('Torque (N⋅m)')
-    axes[2].set_xlabel('Time (s)')
-    axes[2].grid(True)
-    axes[2].legend()
-
-    if track_traj:
-        # compare the actual trajectory with the optimal trajectory
-        joint_positions_opt = Z_opt[:3, :].T
-        joint_velocities_opt = Z_opt[3:, :].T
-        axes[3].plot(times, joint_positions, label='Actual', linewidth=2)
-        axes[3].plot(T_opt, joint_positions_opt, '--', label='Optimal', linewidth=2)
-        axes[3].set_ylabel('Joint Positions (rad)')
-        axes[3].set_xlabel('Time (s)')
-        axes[3].grid(True)
-
-        axes[4].plot(times, joint_velocities, label='Actual', linewidth=2)
-        axes[4].plot(T_opt, joint_velocities_opt, '--', label='Optimal', linewidth=2)
-        axes[4].set_ylabel('Joint Velocities (rad/s)')
-        axes[4].set_xlabel('Time (s)')
-        axes[4].grid(True)
-    
-    plt.tight_layout()
-    plt.savefig(plot_save_path, dpi=300, bbox_inches='tight')
-    print(f"Saved plot to: {plot_save_path}")
-    plt.show()
-
+    robot.plot_results(sim_data, track_traj=track_traj, save_path=plot_save_path)
 
 
     if not track_traj:

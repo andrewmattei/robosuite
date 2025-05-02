@@ -17,4 +17,5 @@ robosuite-models==1.0.0
 usd-core
 
 # for mujoco rendering
-imageio
+imageio[ffmpeg]
+imageio[pyav]

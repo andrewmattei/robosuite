@@ -3,6 +3,14 @@
 ![gallery of_environments](docs/images/gallery.png)
 
 Added Dual Kinova Gen3 Robot into the Robot Collection.
+
+Use
+```
+uv pip uninstall robosuite
+uv pip install -e .
+```
+to make import user created module possible.
+
 <p float="left">
   <img src="docs/images/dual_kinova3.png" width="400">
 </p>

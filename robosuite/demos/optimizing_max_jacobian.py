@@ -4,6 +4,96 @@ import matplotlib.pyplot as plt
 import os
 
 # ============================== Helper Functions ==============================
+def forward_kinematics_homogeneous(q, l, site=3):
+    """
+    Computes the homogeneous transform from base to a specified site
+    for a planar 3DOF arm using rotation matrices.
+
+    Parameters:
+        q : SX [3x1] joint angles
+        l : [3] list of link lengths
+        site : int, which link to compute transform to (1, 2, or 3)
+               1: base to link 1
+               2: base to link 2
+               3: base to end-effector (default)
+    Returns:
+        T_0_site : 3x3 homogeneous transformation matrix (planar SE(2))
+    """
+    def rot(theta):
+        return cs.vertcat(
+            cs.horzcat(cs.cos(theta), -cs.sin(theta), 0),
+            cs.horzcat(cs.sin(theta),  cs.cos(theta), 0),
+            cs.horzcat(0,              0,             1)
+        )
+
+    def trans(x, y):
+        return cs.vertcat(
+            cs.horzcat(1, 0, x),
+            cs.horzcat(0, 1, y),
+            cs.horzcat(0, 0, 1)
+        )
+
+    # Base to link 1
+    T1 = rot(q[0]) @ trans(l[0], 0)
+    if site == 1:
+        return T1
+        
+    # Link 1 to link 2
+    T2 = rot(q[1]) @ trans(l[1], 0)
+    if site == 2:
+        return T1 @ T2
+        
+    # Link 2 to end-effector
+    T3 = rot(q[2]) @ trans(l[2], 0)
+    if site == 3:
+        return T1 @ T2 @ T3
+        
+    raise ValueError(f"Invalid site {site}. Must be 1, 2, or 3.")
+
+def end_effector_position(q, l):
+    """
+    Extracts the (x, y) position of the end-effector from the homogeneous transform
+
+    Parameters:
+        q : SX [3x1] joint angles
+        l : [3] list of link lengths
+    Returns:
+        pos : SX [2x1] end-effector position
+    """
+    T = forward_kinematics_homogeneous(q, l)
+    return T[:2, 2]
+
+
+def inverse_kinematics_casadi(target_pose, l, q_init=None):
+    """
+    Solve inverse kinematics using CasADi and symbolic homogeneous FK.
+
+    Args:
+        target_pose: np.array shape (2,) desired EE position
+        l: list of link lengths [l1, l2, l3]
+        q_init: Optional np.array shape (3,) initial guess
+
+    Returns:
+        np.array shape (3,) or None if solve fails
+    """
+    q_sym = cs.SX.sym("q", 3)
+    ee_pos = end_effector_position(q_sym, l)
+
+    cost = cs.sumsqr(ee_pos - target_pose)
+    nlp = {'x': q_sym, 'f': cost}
+    solver = cs.nlpsol('ik_solver', 'ipopt', nlp, {'ipopt.print_level': 0, 'print_time': 0})
+
+    if q_init is None:
+        q_init = np.zeros(3)
+
+    try:
+        sol = solver(x0=q_init, lbx=-np.pi, ubx=np.pi)
+        return np.array(sol['x']).flatten()
+    except RuntimeError:
+        print("[IK FAIL] CasADi solver failed.")
+        return None
+
+
 def compute_jacobian(q, l):
     """Compute Jacobian for 3DOF planar arm"""
     # Assuming q is a CasADi SX matrix
@@ -170,6 +260,138 @@ def compute_symbolic_cartesian_acceleration(M, C, J, q, dq, tau, G=None):
     return xdd_sym
 
 
+def linearize_dynamics_along_trajectory(T_opt, U_opt, Z_opt, m, l, r):
+    """
+    Linearizes the dynamics around a given state-control trajectory.
+
+    Args:
+        T_opt: (N,) time vector.
+        U_opt: (3, N) optimal torque inputs.
+        Z_opt: (6, N+1) optimal [q; dq] trajectory.
+        m, l, r: robot parameters.
+        dt: time step.
+
+    Returns:
+        A_list: list of discrete-time A matrices.
+        B_list: list of discrete-time B matrices.
+    """
+    
+    dt_list = np.diff(T_opt)
+    dt_list = np.append(dt_list, dt_list[-1])  # Append last value to match U_opt length
+    N = U_opt.shape[1]
+    A_list, B_list = [], []
+
+    q_sym = cs.SX.sym("q", 3)
+    dq_sym = cs.SX.sym("dq", 3)
+    tau_sym = cs.SX.sym("tau", 3)
+    z_sym = cs.vertcat(q_sym, dq_sym)
+
+    # Get dynamics
+    M_sym, C_sym, _, _ = formulate_symbolic_dynamic_matrices(m, l, r, q_sym, dq_sym)
+    ddq_sym = cs.solve(M_sym, tau_sym - C_sym @ dq_sym)
+
+    z_next = cs.vertcat(dq_sym, ddq_sym)
+    f_cont = cs.Function("f_cont", [z_sym, tau_sym], [z_next])
+
+    for k in range(N):
+        dt_k = dt_list[k]
+        z_k = Z_opt[:, k]
+        u_k = U_opt[:, k]
+
+        A_k = cs.jacobian(f_cont(z_sym, tau_sym), z_sym)
+        B_k = cs.jacobian(f_cont(z_sym, tau_sym), tau_sym)
+
+        A_k_fun = cs.Function("A_k_fun", [z_sym, tau_sym], [A_k])
+        B_k_fun = cs.Function("B_k_fun", [z_sym, tau_sym], [B_k])
+
+        A_d = np.eye(6) + dt_k * A_k_fun(z_k, u_k).full()
+        B_d = dt_k * B_k_fun(z_k, u_k).full()
+
+        A_list.append(A_d)
+        B_list.append(B_d)
+
+    return A_list, B_list
+
+
+
+def sample_qf_given_y_line_casadi(robot, q_ref, l_ext, r_ext, n_pose, v_f_list):
+    """
+    Samples joint configurations with same y as FK(q_ref), and different x across a range.
+    Each pose is paired with all velocities in v_f_list.
+
+    Args:
+        robot: RobotSystem with .l and compatible FK
+        q_ref: np.array shape (3,), reference joint configuration
+        l_ext, r_ext: float, x-range around FK(q_ref)
+        n_pose: int, number of pose samples along x-axis
+        v_f_list: list of 2D velocities (np.array shape (2,))
+
+    Returns:
+        List of (q_f, v_f) tuples of length n_pose * len(v_f_list)
+    """
+
+    # Convert q_ref to CasADi SX for symbolic FK computation
+    q_sym = cs.SX.sym("q", 3)
+    ee_pos_fun = cs.Function("ee_pos_fun", [q_sym], [end_effector_position(q_sym, robot.l)])
+    p_ref = ee_pos_fun(q_ref).full().flatten()
+    y_ref = p_ref[1]
+
+    x_range = np.linspace(p_ref[0] - l_ext, p_ref[0] + r_ext, n_pose)
+    qf_vf_pairs = []
+
+    for x_i in x_range:
+        target_pose = np.array([x_i, y_ref])
+        q_f = inverse_kinematics_casadi(target_pose, robot.l, q_init=q_ref)
+        if q_f is not None:
+            for v_f in v_f_list:
+                qf_vf_pairs.append((q_f, v_f))
+        else:
+            print(f"[WARNING] IK failed for x = {x_i}, skipping this pose.")
+
+    return qf_vf_pairs
+
+
+def sample_pf_vf_grid(l_px, r_px, n_px,      # position x range and samples
+                      l_vx, r_vx, n_vx,       # velocity x range and samples
+                      l_vy, r_vy, n_vy):      # velocity y range and samples
+    """
+    Samples end-effector position and velocity pairs in a grid pattern.
+    Positions are sampled along x-axis with y=0 (table surface).
+    Velocities are sampled in a 2D grid within specified ranges.
+    
+    Args:
+        l_px, r_px: left/right bounds for position x sampling
+        n_px: number of position samples
+        l_vx, r_vx: left/right bounds for velocity x sampling
+        n_vx: number of velocity x samples
+        l_vy, r_vy: lower/upper bounds for velocity y sampling
+        n_vy: number of velocity y samples
+        
+    Returns:
+        List of (p_f, v_f) tuples where:
+            p_f: position [x, 0]
+            v_f: velocity [vx, vy]
+    """
+    # Sample positions along x-axis (y is always 0)
+    x_range = np.linspace(l_px, r_px, n_px)
+    
+    # Sample velocities in 2D grid
+    vx_range = np.linspace(l_vx, r_vx, n_vx)
+    vy_range = np.linspace(l_vy, r_vy, n_vy)
+    
+    # Generate all combinations
+    pf_vf_pairs = []
+    
+    for px in x_range:
+        p_f = np.array([px, 0.0])  # position on table surface
+        for vx in vx_range:
+            for vy in vy_range:
+                v_f = np.array([vx, vy])
+                pf_vf_pairs.append((p_f, v_f))
+            
+    return pf_vf_pairs
+
+
 from scipy.interpolate import interp1d
 
 def match_trajectories(T_des, *args):
@@ -243,6 +465,44 @@ def match_trajectories(T_des, *args):
     return results
 
 
+def save_solution_to_npy(solution, filename):
+    """
+    Save the solution to a .npy file.
+    
+    Parameters:
+        solution : dict
+            The solution dictionary containing the trajectory data.
+        filename : str
+            The name of the file to save the solution.
+        upsample : int
+            The number of points to upsample the trajectory.
+    """
+    T = solution['t_f']
+    l = solution['l']
+    num_steps = solution['q'].shape[1]
+    
+    # Upsample the trajectory
+    Z_opt = np.vstack((solution['q'], solution['dq']))
+    # U_opt = np.hstack((solution['tau'], np.zeros((3,1)))) # !!bad shouldn't pad with zero
+    U_opt = np.hstack((solution['tau'], solution['tau'][:, -1:]))  # pad with last value
+    T_opt = np.linspace(0, T, num_steps)
+    
+    
+    # Save the trajectory data
+    trajectory_data = {
+        'T_opt': T_opt,
+        'Z_opt': Z_opt,
+        'U_opt': U_opt,
+        'T': T,
+        'l': l,
+        'm': solution['m'],
+        'r': solution['r'],
+    }
+    
+    # Save to .npy file
+    np.save(filename, trajectory_data)
+
+
 def display_and_save_solution(solution, filename):
     # Display the results
     T = solution['t_f']
@@ -262,7 +522,8 @@ def display_and_save_solution(solution, filename):
 
     t_dense = np.linspace(0, T, 1000)
     Z_opt = np.vstack((solution['q'], solution['dq']))
-    U_opt = np.hstack((solution['tau'], np.zeros((3,1))))
+    # U_opt = np.hstack((solution['tau'], np.zeros((3,1)))) # !!bad shouldn't pad with zero
+    U_opt = np.hstack((solution['tau'], solution['tau'][:, -1:]))  # pad with last value
     T_opt = np.linspace(0, T, num_steps)
     [Z_dense] = match_trajectories(t_dense, T_opt, Z_opt)
 
@@ -493,7 +754,7 @@ def optimize_trajectory_cartesian_accel(q_f, v_f, m, l, r,
                         tau_lower, tau_upper,
                         T, N,
                         weight_v=1e-3, weight_xdd=1e-3,
-                        weight_tau_smooth = 1e-3, weight_terminal = 1e-1):
+                        weight_tau_smooth = 1e-3, weight_terminal = 1e-3):
     """
     Optimize a trajectory for the 3DOF planar arm.
     
@@ -531,6 +792,22 @@ def optimize_trajectory_cartesian_accel(q_f, v_f, m, l, r,
     xdd_sym = compute_symbolic_cartesian_acceleration(M, C, J, q_sym, dq_sym, tau_sym)
     xdd_fun = cs.Function("xdd", [q_sym, dq_sym, tau_sym], [xdd_sym])
 
+    # Create forward kinematics functions for each link
+    T1 = forward_kinematics_homogeneous(q_sym, l, site=1)
+    T2 = forward_kinematics_homogeneous(q_sym, l, site=2)
+    T3 = forward_kinematics_homogeneous(q_sym, l, site=3)
+
+    # Extract positions from transformation matrices
+    p1 = T1[:2, 2]  # x,y position of link 1
+    p2 = T2[:2, 2]  # x,y position of link 2
+    p3 = T3[:2, 2]  # x,y position of link 3 (end-effector)
+
+    # Create CasADi functions for each link's position
+    fk1_fun = cs.Function('fk1', [q_sym], [p1])
+    fk2_fun = cs.Function('fk2', [q_sym], [p2])
+    fk3_fun = cs.Function('fk3', [q_sym], [p3])
+
+
     # Normalize v_f direction
     v_f = cs.DM(v_f).reshape((2, 1))
     v_f_dir = v_f / (cs.norm_2(v_f) + 1e-8)
@@ -548,21 +825,21 @@ def optimize_trajectory_cartesian_accel(q_f, v_f, m, l, r,
     dQ = opti.variable(3, N+1)  # joint velocities trajectory
     Tau = opti.variable(3, N)   # joint torques (control input)
 
-    # Set initial values
-    opti.set_initial(Q, np.tile(q_f.reshape(-1, 1), (1, N+1)))
-    opti.set_initial(dQ, np.tile(dq_f.reshape(-1, 1), (1, N+1)))
-    opti.set_initial(Tau, np.zeros((3, N)))
+    # # Set initial values
+    # opti.set_initial(Q, np.tile(q_f.reshape(-1, 1), (1, N+1)))
+    # opti.set_initial(dQ, np.tile(dq_f.reshape(-1, 1), (1, N+1)))
+    # opti.set_initial(Tau, np.zeros((3, N)))
 
     # Set final conditions
     opti.subject_to(Q[:, -1] == q_f)
     opti.subject_to(dQ[:, -1] == dq_f)
 
-    p_opts = {"print_time": True}
-    s_opts = {"print_level": 5}  # Increase to a higher level for more detailed output
-    opti.solver('ipopt', p_opts, s_opts)
 
     # Cost accumulator
     total_cost = 0
+
+    # sense if peak velocity is reached
+    is_v_peak = False
 
     # Reverse-time integration loop
     for k in reversed(range(N)):
@@ -587,39 +864,70 @@ def optimize_trajectory_cartesian_accel(q_f, v_f, m, l, r,
         opti.subject_to(tau_lower <= tau_k)
         opti.subject_to(tau_k <= tau_upper)
 
-
+        # adding constraints on keeping each joint cartiesian position >=0
+        # Add position constraints for each link
+        p1_k = fk1_fun(q_next)
+        p2_k = fk2_fun(q_next)
+        p3_k = fk3_fun(q_next)
         
-        if k < N - 1:
-            # Minimize Cartesian acceleration in v_f direction
-            xdd_k = xdd_fun(q_next, dq_next, tau_k)
-            xdd_proj = cs.dot(v_f_dir, xdd_k)
-            total_cost += xdd_proj * weight_xdd
+        # Constrain y positions to be above 0 (or any desired height)
+        opti.subject_to(p1_k[1] >= 0)  # Link 1 y-position
+        opti.subject_to(p2_k[1] >= 0)  # Link 2 y-position
+        opti.subject_to(p3_k[1] >= 0)  # Link 3 y-position
 
+
+        # smoothness of the joint velocity 
+        # This will certainly make the cirve smoother but away from bang-bang
+        # dq_k_next = dQ[:, k+1]
+        # dq_diff = dq_k_next - dQ[:, k]
+        # cost_dq_smooth = cs.sumsqr(dq_diff)
+        # total_cost += weight_v_smooth * cost_dq_smooth
+
+        if k < N - 1:
             # Minimize end-effector velocity in v_f direction
             J_k = J_fun(q_next)  # 2x3 Jacobian
             v_ee = cs.mtimes(J_k, dq_next) # end-effector velocity (2x1)
             total_cost += -cs.sumsqr(v_ee) * weight_v
+
+            # Minimize Cartesian acceleration in v_f direction 
+            # Not good, removed (Update 04/11/25)
+            # xdd_k = xdd_fun(q_next, dq_next, tau_k)
+            # xdd_proj = cs.dot(v_f_dir, xdd_k)
+            # total_cost += xdd_proj * weight_xdd
+            
+            # TODO can add omega as a desired impact feature!!!
+
+            # the acceleration direction constraint is not helping if only at the end
+            # Instead of maximizing decel towards the direction of v_f at all time,
+            # encourage normalized acceleration ?
+            # F_ee = cs.mtimes(J_k.T, tau_k)  # end-effector force (2x1)
+            # TODO the idea is that at some pose, same torque would result in much larger acceleration
+            # than at other pose, so we want to keep the acceleration normalized
+            xdd_k = xdd_fun(q_next, dq_next, tau_k)
+            ramp = (k / N)**2  # or (k / N)**4 for stronger emphasis
+            xdd_proj = cs.dot(v_f_dir, xdd_k)
+            total_cost += xdd_proj * weight_xdd * ramp
+
+            # Minimize jerkiness (smoothness) of the torque
+            tau_k_next = Tau[:, k+1]
+            tau_diff = tau_k_next - tau_k
+            cost_tau_smooth = cs.sumsqr(tau_diff)
+            total_cost += weight_tau_smooth * cost_tau_smooth
+
+        # if k < N - 2:
+        #     xdd_k_next = xdd_fun(Q[:, k+2], dQ[:, k+2], Tau[:, k+1])
+        #     jerk = xdd_k_next - xdd_k
+        #     total_cost += weight_tau_smooth * cs.sumsqr(jerk)
+
         if k == N - 1:
 
              # Minimize Cartesian acceleration in v_f direction
             xdd_k = xdd_fun(q_next, dq_next, tau_k)
             xdd_proj = cs.dot(v_f_dir, xdd_k)
-            total_cost += xdd_proj * weight_terminal
+            total_cost += xdd_proj * weight_terminal * N
 
-            # smoothness of the joint velocity right before the end
-            dq_k_next = dQ[:, k+1]
-            dq_diff = dq_k_next - dQ[:, k]
-            cost_dq_smooth = cs.sumsqr(dq_diff)
-            total_cost += weight_terminal * cost_dq_smooth
 
-        
-
-        # Minimize jerkiness (smoothness) of the torque
-        if k < N - 1:
-            tau_k_next = Tau[:, k+1]
-            tau_diff = tau_k_next - tau_k
-            cost_tau_smooth = cs.sumsqr(tau_diff)
-            total_cost += weight_tau_smooth * cost_tau_smooth
+            
 
     # Initial velocity zero constraint (start from rest)
     opti.subject_to(dQ[:, 0] == 0)
@@ -629,7 +937,7 @@ def optimize_trajectory_cartesian_accel(q_f, v_f, m, l, r,
 
     # Solve
     p_opts = {"print_time": True}
-    s_opts = {"print_level": 5}
+    s_opts = {"print_level": 1}
     opti.solver("ipopt", p_opts, s_opts)
     try:
         sol = opti.solve()
@@ -819,6 +1127,226 @@ def time_optimal_trajectory_cartesian_accel(q_f, v_f, m, l, r,
     }
 
 
+def optimize_trajectory_cartesian_accel_flex_pose(p_f, v_f, m, l, r,
+                        q_lower, q_upper, dq_lower, dq_upper,
+                        tau_lower, tau_upper,
+                        T, N,
+                        weight_v=1e-3, weight_xdd=1e-3,
+                        weight_tau_smooth = 1e-3, weight_terminal = 1e-3,
+                        boundary_epsilon=1e-6):
+    """
+    Optimize a trajectory for the 3DOF planar arm.
+    
+    The trajectory ends q_f and dq_f, and over a time horizon T with N steps,
+    the optimizer aims to drive the end-effector (p3) velocity toward v_f from zero
+
+    This take final ee p_f and v_f as input, and optimize the trajectory
+    
+              
+        
+    Parameters:
+      q_f    : (3x1 np.array) final joint angles.
+      v_f      : (2d np.array) desired end-effector velocity.
+      m, l, r    : lists/arrays of link masses, lengths, and center-of-mass distances.
+      q_lower, q_upper: (3x1 arrays) joint limits.
+      dq_lower, dq_upper: (3x1 arrays) joint velocity limits.
+      tau_lower, tau_upper: (3x1 arrays) joint torque limits.
+      T          : total time horizon.
+      N          : number of discretization steps.
+
+    Returns:
+      sol : dictionary with optimal trajectories for q, dq, and tau.
+    """
+    dt = T / N
+
+    # Define symbolic variables
+    q_sym = cs.SX.sym('q', 3)
+    dq_sym = cs.SX.sym('dq', 3)
+    tau_sym = cs.SX.sym('tau', 3)
+
+    # Symbolic Forward kinematics
+    FK_fun = cs.Function("FK", [q_sym], [end_effector_position(q_sym, l)])
+    
+    # Create forward kinematics functions for each link
+    T1 = forward_kinematics_homogeneous(q_sym, l, site=1)
+    T2 = forward_kinematics_homogeneous(q_sym, l, site=2)
+    T3 = forward_kinematics_homogeneous(q_sym, l, site=3)
+
+    # Extract positions from transformation matrices
+    p1 = T1[:2, 2]  # x,y position of link 1
+    p2 = T2[:2, 2]  # x,y position of link 2
+    p3 = T3[:2, 2]  # x,y position of link 3 (end-effector)
+
+    # Create CasADi functions for each link's position
+    fk1_fun = cs.Function('fk1', [q_sym], [p1])
+    fk2_fun = cs.Function('fk2', [q_sym], [p2])
+    fk3_fun = cs.Function('fk3', [q_sym], [p3])
+
+    # Symbolic dynamics
+    M, C, _, _ = formulate_symbolic_dynamic_matrices(m, l, r, q_sym, dq_sym)
+    J = compute_jacobian(q_sym, l)
+    J_fun = cs.Function('J', [q_sym], [J])
+
+    # Cartesian acceleration expression
+    xdd_sym = compute_symbolic_cartesian_acceleration(M, C, J, q_sym, dq_sym, tau_sym)
+    xdd_fun = cs.Function("xdd", [q_sym, dq_sym, tau_sym], [xdd_sym])
+
+    # Normalize v_f direction
+    v_f = cs.DM(v_f).reshape((2, 1))
+    v_f_dir = v_f / (cs.norm_2(v_f) + 1e-8)
+
+
+    # Create an Opti instance
+    opti = cs.Opti()
+
+    # Decision variables: state and control trajectories
+    Q = opti.variable(3, N+1)   # joint angles trajectory
+    dQ = opti.variable(3, N+1)  # joint velocities trajectory
+    Tau = opti.variable(3, N)   # joint torques (control input)
+
+
+    # # Set initial values
+    # opti.set_initial(Q, np.tile(q_f.reshape(-1, 1), (1, N+1)))
+    # opti.set_initial(dQ, np.tile(dq_f.reshape(-1, 1), (1, N+1)))
+    # opti.set_initial(Tau, np.zeros((3, N)))
+
+    # Set final conditions
+    eef_final_pos = FK_fun(Q[:, -1])
+    opti.subject_to(eef_final_pos == p_f)
+    J_f = J_fun(Q[:, -1])  # 2x3 Jacobian at q_f
+    opti.subject_to(J_f @ dQ[:, -1] == v_f)
+
+
+    # Cost accumulator
+    total_cost = 0
+
+    # sense if peak velocity is reached
+    is_v_peak = False
+
+    # Reverse-time integration loop
+    for k in reversed(range(N)):
+        q_next = Q[:, k+1]
+        dq_next = dQ[:, k+1]
+        tau_k = Tau[:, k]
+
+        # Dynamics
+        M_k = cs.Function('M', [q_sym], [M])(q_next)
+        C_k = cs.Function('C', [q_sym, dq_sym], [C])(q_next, dq_next)
+        ddq_k = cs.solve(M_k, tau_k - C_k @ dq_next)
+
+        # Reverse Euler integration
+        opti.subject_to(Q[:, k] == q_next - dt * dq_next)
+        opti.subject_to(dQ[:, k] == dq_next - dt * ddq_k)
+
+        # Enforce joint, velocity, torque limits
+        opti.subject_to(q_lower <= Q[:, k])
+        opti.subject_to(Q[:, k] <= q_upper)
+        opti.subject_to(dq_lower <= dQ[:, k])
+        opti.subject_to(dQ[:, k] <= dq_upper)
+        opti.subject_to(tau_lower <= tau_k)
+        opti.subject_to(tau_k <= tau_upper)
+
+        # adding constraints on keeping each joint cartiesian position >=0
+        # Add position constraints for each link
+        p1_k = fk1_fun(q_next)
+        p2_k = fk2_fun(q_next)
+        p3_k = fk3_fun(q_next)
+        
+        # Constrain y positions to be above 0 (or any desired height)
+        opti.subject_to(p1_k[1] >= 0-boundary_epsilon)  # Link 1 y-position
+        opti.subject_to(p2_k[1] >= 0-boundary_epsilon)  # Link 2 y-position
+        opti.subject_to(p3_k[1] >= 0-boundary_epsilon)  # Link 3 y-position
+
+
+        # smoothness of the joint velocity 
+        # This will certainly make the cirve smoother but away from bang-bang
+        # dq_k_next = dQ[:, k+1]
+        # dq_diff = dq_k_next - dQ[:, k]
+        # cost_dq_smooth = cs.sumsqr(dq_diff)
+        # total_cost += weight_v_smooth * cost_dq_smooth
+
+        if k < N - 1:
+            # Minimize end-effector velocity in v_f direction
+            J_k = J_fun(q_next)  # 2x3 Jacobian
+            v_ee = cs.mtimes(J_k, dq_next) # end-effector velocity (2x1)
+            total_cost += -cs.sumsqr(v_ee) * weight_v
+
+            # Minimize Cartesian acceleration in v_f direction 
+            # Not good, removed (Update 04/11/25)
+            # xdd_k = xdd_fun(q_next, dq_next, tau_k)
+            # xdd_proj = cs.dot(v_f_dir, xdd_k)
+            # total_cost += xdd_proj * weight_xdd
+
+            # the acceleration direction constraint is not helping if only at the end
+            # Instead of maximizing decel towards the direction of v_f at all time,
+            # encourage 
+            xdd_k = xdd_fun(q_next, dq_next, tau_k)
+            ramp = (k / N)**2  # or (k / N)**4 for stronger emphasis
+            xdd_proj = cs.dot(v_f_dir, xdd_k)
+            total_cost += xdd_proj * weight_xdd * ramp
+
+            # # make ee angular velocity zero
+            # J_rot = cs.DM([1,1,1]).T
+            # ee_omega = cs.mtimes(J_rot, dq_next) # end-effector angular velocity (1x1)
+            # ee_omega_sq = cs.sumsqr(ee_omega)
+            # total_cost += ee_omega_sq * weight_xdd * ramp
+
+            # Minimize jerkiness (smoothness) of the torque
+            tau_k_next = Tau[:, k+1]
+            tau_diff = tau_k_next - tau_k
+            cost_tau_smooth = cs.sumsqr(tau_diff)
+            total_cost += weight_tau_smooth * cost_tau_smooth
+
+        # if k < N - 2:
+        #     xdd_k_next = xdd_fun(Q[:, k+2], dQ[:, k+2], Tau[:, k+1])
+        #     jerk = xdd_k_next - xdd_k
+        #     total_cost += weight_tau_smooth * cs.sumsqr(jerk)
+
+        if k == N - 1:
+
+            # maximize Cartesian deceleration in v_f direction
+            xdd_k = xdd_fun(q_next, dq_next, tau_k)
+            xdd_proj = cs.dot(v_f_dir, xdd_k)
+            total_cost += xdd_proj * weight_terminal * N
+
+            # make ee angular velocity zero
+            J_rot = cs.DM([1,1,1]).T
+            ee_omega = cs.mtimes(J_rot, dq_next) # end-effector angular velocity (1x1)
+            ee_omega_sq = cs.sumsqr(ee_omega)
+            total_cost += weight_terminal * ee_omega_sq * N
+
+            
+
+    # Initial velocity zero constraint (start from rest)
+    opti.subject_to(dQ[:, 0] == 0)
+
+    # Set objective
+    opti.minimize(total_cost)
+
+    # Solve
+    # p_opts = {"print_time": True}
+    # s_opts = {"print_level": 5}
+    p_opts = {"print_time": True}
+    s_opts = {"print_level": 1}
+    opti.solver("ipopt", p_opts, s_opts)
+    try:
+        sol = opti.solve()
+    except RuntimeError as e:
+        print("[Solver failed]")
+        opti.debug.show_infeasibilities()
+        raise e
+
+    return {
+        "q": sol.value(Q),
+        "dq": sol.value(dQ),
+        "tau": sol.value(Tau),
+        "cost": sol.value(total_cost),
+        "t_f": T,
+        "m": m,
+        "l": l,
+        "r": r,
+    }
+
 # ================================ Main Execution ==============================
 if __name__ == "__main__":
     # Arm parameters (example values)
@@ -855,4 +1383,4 @@ if __name__ == "__main__":
     
     # Display and save the solution
     display_and_save_solution(solution, 'opt_trajectory.npy')
-    
+

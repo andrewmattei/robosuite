@@ -137,6 +137,7 @@ if __name__ == "__main__":
     # === estimating the impact force ===
     timeconst, dampratio = env.model.geom_solref[-1]
     # F_imp_expacted = m*v_f/timeconst + 2*m*dampratio*v_f/timeconst # chatgpt estimate
+    # TODO write the equation used from mujoco web
     k_est = 1108030
     b_est = 210.53
     panetration_depth = np.sqrt(m*v_f**2/k_est)
