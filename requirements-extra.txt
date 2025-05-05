@@ -4,6 +4,12 @@ gymnasium
 # required for optimization
 casadi
 
+# required for fast robot kinematics / dynamics
+pin
+
+# need to downgrade scipy: https://github.com/stack-of-tasks/pinocchio/issues/2645
+# scipy==1.8.0
+
 # macOS only
 hidapi
 
