@@ -10,3 +10,4 @@ from .spot_arm import SpotArm
 from .tiago_robot import Tiago
 from .gr1_robot import GR1, GR1FixedLowerBody, GR1ArmsOnly, GR1FloatingBody
 from .dual_kinova3_robot import DualKinova3
+from .kinova3srl_robot import Kinova3SRL

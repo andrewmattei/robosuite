@@ -31,6 +31,7 @@ ROBOT_CLASS_MAPPING = {
     "PandaDexRH": FixedBaseRobot,
     "PandaDexLH": FixedBaseRobot,
     "DualKinova3": WheeledRobot,
+    "Kinova3SRL": FixedBaseRobot
 }
 
 target_type_mapping = {

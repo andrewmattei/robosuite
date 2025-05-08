@@ -2,13 +2,16 @@
 gymnasium
 
 # required for optimization
-casadi
+casadi  # built from source instead to be accessible to pinocchio build
 
 # required for fast robot kinematics / dynamics
-pin
+# pin  # built from source instead to include pin.casadi
 
 # need to downgrade scipy: https://github.com/stack-of-tasks/pinocchio/issues/2645
 # scipy==1.8.0
+
+# need to downgrade numpy:
+numpy<2.0
 
 # macOS only
 hidapi

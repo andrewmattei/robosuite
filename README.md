@@ -4,12 +4,20 @@
 
 Added Dual Kinova Gen3 Robot into the Robot Collection.
 
-Use
+Note that with the additional dependencies, first navigate to the same path as `requirements.txt`:
 ```
+uv venv --python 3.10.12
+source .venv/bin/activate
+uv pip install -r requirements.txt -r requirements-extra.txt
 uv pip uninstall robosuite
 uv pip install -e .
 ```
 to make import user created module possible.
+
+
+Then to include Pinocchio - Casadi implementation, please follow the robotpkg install steps in the "Linux" tab of the [official guide](https://stack-of-tasks.github.io/pinocchio/download.html).
+Note that Pinocchio will be installed in system, if your `.bashrc` has ros2 sourced, it might incurr error.
+
 
 <p float="left">
   <img src="docs/images/dual_kinova3.png" width="400">
