@@ -92,7 +92,6 @@ Examples:
 
 import argparse
 import time
-from copy import deepcopy
 
 import numpy as np
 import os
@@ -101,7 +100,6 @@ import os
 repo_path = os.path.abspath(os.path.join(os.path.abspath(__file__), os.pardir, os.pardir))
 dual_kinova3_osc_config_path = os.path.join(repo_path, "controllers", "config", "robots", "dualkinova3_osc.json")
 
-import mujoco
 import robosuite as suite
 from robosuite import load_composite_controller_config
 from robosuite.controllers.composite.composite_controller import WholeBody
@@ -140,37 +138,12 @@ class TimeKeeper:
         return self.frame_count / elapsed if elapsed > 0 else 0
     
 
-def send_gripper_position(base, gripper_pos):
-    """
-    Send gripper position to a single robot arm using Kortex API.
-    
-    Args:
-        base: BaseClient for the arm
-        gripper_pos: Position command for gripper (0.0 to 1.0)
-    """
-    # Create gripper command
-    gripper_cmd = Base_pb2.GripperCommand()
-    
-    # Set mode to position control
-    gripper_cmd.mode = Base_pb2.GRIPPER_POSITION
-    
-    # Add finger command
-    finger = gripper_cmd.gripper.finger.add()
-    finger.finger_identifier = 1
-    finger.value = np.clip(gripper_pos, 0.0, 1.0)
-    
-    try:
-        base.SendGripperCommand(gripper_cmd)
-    except Exception as e:
-        print(f"Error sending gripper command: {e}")
-    
-
 def sync_joint_pos_with_kortex(env, left_base, left_base_cyclic, right_base, right_base_cyclic):
     ## Retrieve the simulation robot states
     active_robot = env.robots[0]
     sim_q = env.sim.data.qpos  # simulation’s full joint state vector
     sim_qd = env.sim.data.qvel
-    kp = 1.5
+    kp = 1.0
     left_qd_cmd = None
     right_qd_cmd = None
 
@@ -223,7 +196,7 @@ def sync_joint_pos_with_kortex(env, left_base, left_base_cyclic, right_base, rig
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--environment", type=str, default="DualKinova3SRLEnv", help="Which environment to use")
+    parser.add_argument("--environment", type=str, default="DualKinova3SRLEnv")
     parser.add_argument("--robots", nargs="+", type=str, default="DualKinova3", help="Which robot(s) to use in the env")
     parser.add_argument(
         "--config", type=str, default="default", help="Specified environment configuration if necessary"
@@ -237,7 +210,7 @@ if __name__ == "__main__":
         default=dual_kinova3_osc_config_path,
         help="Choice of controller. Can be generic (eg. 'BASIC' or 'WHOLE_BODY_MINK_IK') or json file (see robosuite/controllers/config for examples) or None to get the robot's default controller if it exists",
     )
-    parser.add_argument("--device", type=str, default="questdualkinova3")
+    parser.add_argument("--device", type=str, default="keyboard")
     parser.add_argument("--pos-sensitivity", type=float, default=1.0, help="How much to scale position user inputs")
     parser.add_argument("--rot-sensitivity", type=float, default=1.0, help="How much to scale rotation user inputs")
     parser.add_argument(
@@ -270,7 +243,7 @@ if __name__ == "__main__":
     # Create environment
     env = suite.make(
         **config,
-        has_renderer=False,
+        has_renderer=True,
         has_offscreen_renderer=False,
         render_camera="frontview",
         ignore_done=True,
@@ -309,8 +282,7 @@ if __name__ == "__main__":
     elif args.device == "questdualkinova3":
         from robosuite.devices.quest_dualkinova3_teleop import QuestDualKinova3Teleop
 
-        device = QuestDualKinova3Teleop(env=env, debug=False, mirror_actions=False)
-        # note that when mirroring actions, keep quest facing the same direction as the robot
+        device = QuestDualKinova3Teleop(env=env, debug=False)
     else:
         raise Exception("Invalid device choice: choose either 'keyboard' or 'spacemouse'.")
 
@@ -329,33 +301,33 @@ if __name__ == "__main__":
         right_base_cyclic = BaseCyclicClient(right_arm_conn)
 
         try:
-            # Reset the environment
-            obs = env.reset()
+            while True:
+                # Reset the environment
+                obs = env.reset()
 
-            # reset the robot arm pose to home
-            results = tb.home_both_arms(left_base, right_base, "Home")
+                # reset the robot arm pose to home
+                results = tb.home_both_arms(left_base, right_base, "Home")
 
-            # Set the gripper to open
-            send_gripper_position(left_base, 0.0)
-            # send_gripper_position(right_base,0.0)
+                # Setup rendering
+                cam_id = 0
+                num_cam = len(env.sim.model.camera_names)
+                env.render()
 
-            # Initialize variables that should be maintained between resets
-            last_grasp = 0
+                # Initialize variables that should be maintained between resets
+                last_grasp = 0
 
-            # Initialize device control
-            device.start_control()
+                # Initialize device control
+                device.start_control()
+                all_prev_gripper_actions = [
+                    {
+                        f"{robot_arm}_gripper": np.repeat([0], robot.gripper[robot_arm].dof)
+                        for robot_arm in robot.arms
+                        if robot.gripper[robot_arm].dof > 0
+                    }
+                    for robot in env.robots
+                ]
 
-            model = env.sim.model._model
-            data = env.sim.data._data
-
-            with mujoco.viewer.launch_passive(model, data) as viewer:
-                # Set initial camera parameters
-                viewer.cam.distance = 3.0
-                viewer.cam.azimuth = 120
-                viewer.cam.elevation = -45
-                viewer.cam.lookat[:] = np.array([0.0, -0.25, 0.824])
-
-                while viewer.is_running() and not env.done:
+                while True:
                     start = time.time()
 
                     # Set active robot
@@ -367,10 +339,9 @@ if __name__ == "__main__":
 
                     # If action is none, then this a reset so we should break
                     if input_ac_dict is None:
-                        left_base.Stop()
-                        right_base.Stop()
-                        device.stop()
                         break
+
+                    from copy import deepcopy
 
                     action_dict = deepcopy(input_ac_dict)  # {}
                     # set arm actions
@@ -387,30 +358,17 @@ if __name__ == "__main__":
                         else:
                             raise ValueError
 
-                    # Directly create action vector from current action_dict
-                    # print("action_dict: ", action_dict)
-                    env_action = active_robot.create_action_vector(action_dict)
-                    
-                    # Print gripper action if needed
-                    # print("gripper action: ", env_action[active_robot._ref_gripper_action_indexes])
-                    
+                    # Maintain gripper state for each robot but only update the active robot with action
+                    env_action = [robot.create_action_vector(all_prev_gripper_actions[i]) for i, robot in enumerate(env.robots)]
+                    env_action[device.active_robot] = active_robot.create_action_vector(action_dict)
+                    env_action = np.concatenate(env_action)
+                    for gripper_ac in all_prev_gripper_actions[device.active_robot]:
+                        all_prev_gripper_actions[device.active_robot][gripper_ac] = action_dict[gripper_ac]
+
                     env.step(env_action)
-                    ##################THE HARDWARE MOVE#######################
                     # sync_joint_pos_with_kortex(env, left_base, left_base_cyclic, right_base, right_base_cyclic)
-                    
-                    trigger = device.grasp_states[0]
-                    controller2trigger = device._controller2trigger
-                    left_triger = controller2trigger[device._arm2controller['left']]
-                    right_trigger = controller2trigger[device._arm2controller['right']]
-                    #control gripper
-                    send_gripper_position(left_base, trigger[left_triger])
-                    # send_gripper_position(right_base, trigger[right_trigger])
-
-
-                    # with viewer.lock():
-                    #     viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
-
-                    viewer.sync()
+      
+                    env.render()
 
                     # limit frame rate if necessary
                     if args.max_fr is not None:
@@ -418,10 +376,7 @@ if __name__ == "__main__":
                         diff = 1 / args.max_fr - elapsed
                         if diff > 0:
                             time.sleep(diff)
-                
-
         except KeyboardInterrupt:
             print("Ctrl+C pressed: Stopping the bases...")
             left_base.Stop()
             right_base.Stop()
-            device.stop()

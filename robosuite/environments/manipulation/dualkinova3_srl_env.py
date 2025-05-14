@@ -216,6 +216,7 @@ class DualKinova3SRLEnv(ManipulationEnv):
             active_robot.init_torso_qpos = np.array([self.init_torso_height,])
 
         ## Reset gripper positions to initial values
+        # without this line, the gripper will be faulty
         for arm in active_robot.arms:
             gripper_idx = active_robot._ref_gripper_joint_pos_indexes[arm]
             init_gripper_pos = active_robot.gripper[arm].init_qpos

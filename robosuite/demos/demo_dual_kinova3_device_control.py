@@ -196,7 +196,7 @@ def sync_joint_pos_with_kortex(env, left_base, left_base_cyclic, right_base, rig
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--environment", type=str, default="Bounce")
+    parser.add_argument("--environment", type=str, default="DualKinova3SRLEnv")
     parser.add_argument("--robots", nargs="+", type=str, default="DualKinova3", help="Which robot(s) to use in the env")
     parser.add_argument(
         "--config", type=str, default="default", help="Specified environment configuration if necessary"
@@ -286,97 +286,76 @@ if __name__ == "__main__":
     else:
         raise Exception("Invalid device choice: choose either 'keyboard' or 'spacemouse'.")
 
-    # Initialize the Kinova API
-    left_arm_args = tb.TCPArguments(ip="192.168.0.10")
-    right_arm_args = tb.TCPArguments(ip="192.168.1.10")
-    # TODO No callback list instantiated bug: https://github.com/Kinovarobotics/Kinova-kortex2_Gen3_G3L/issues/166
-    # modifying file home/user/.local/lib/pythonX.X/site-packages/kortex_api/RouterClient.py
-    with ku.DeviceConnection.createTcpConnection(left_arm_args) as left_arm_conn, \
-            ku.DeviceConnection.createTcpConnection(right_arm_args) as right_arm_conn:
-        # Create the session 
-        # Create the client
-        left_base = BaseClient(left_arm_conn)
-        right_base = BaseClient(right_arm_conn)
-        left_base_cyclic = BaseCyclicClient(left_arm_conn)
-        right_base_cyclic = BaseCyclicClient(right_arm_conn)
 
-        try:
-            while True:
-                # Reset the environment
-                obs = env.reset()
+    while True:
+        # Reset the environment
+        obs = env.reset()
 
-                # reset the robot arm pose to home
-                results = tb.home_both_arms(left_base, right_base, "Home")
 
-                # Setup rendering
-                cam_id = 0
-                num_cam = len(env.sim.model.camera_names)
-                env.render()
+        # Setup rendering
+        cam_id = 0
+        num_cam = len(env.sim.model.camera_names)
+        env.render()
 
-                # Initialize variables that should be maintained between resets
-                last_grasp = 0
+        # Initialize variables that should be maintained between resets
+        last_grasp = 0
 
-                # Initialize device control
-                device.start_control()
-                all_prev_gripper_actions = [
-                    {
-                        f"{robot_arm}_gripper": np.repeat([0], robot.gripper[robot_arm].dof)
-                        for robot_arm in robot.arms
-                        if robot.gripper[robot_arm].dof > 0
-                    }
-                    for robot in env.robots
-                ]
+        # Initialize device control
+        device.start_control()
+        all_prev_gripper_actions = [
+            {
+                f"{robot_arm}_gripper": np.repeat([0], robot.gripper[robot_arm].dof)
+                for robot_arm in robot.arms
+                if robot.gripper[robot_arm].dof > 0
+            }
+            for robot in env.robots
+        ]
 
-                while True:
-                    start = time.time()
+        while True:
+            start = time.time()
 
-                    # Set active robot
-                    active_robot = env.robots[device.active_robot]
+            # Set active robot
+            active_robot = env.robots[device.active_robot]
 
-                    # Get the newest action
-                    input_ac_dict = device.input2action()
-                    # this sends our actions to the sim using the dictionary returned by input2action
+            # Get the newest action
+            input_ac_dict = device.input2action()
+            # this sends our actions to the sim using the dictionary returned by input2action
 
-                    # If action is none, then this a reset so we should break
-                    if input_ac_dict is None:
-                        break
+            # If action is none, then this a reset so we should break
+            if input_ac_dict is None:
+                break
 
-                    from copy import deepcopy
+            from copy import deepcopy
 
-                    action_dict = deepcopy(input_ac_dict)  # {}
-                    # set arm actions
-                    for arm in active_robot.arms:
-                        if isinstance(active_robot.composite_controller, WholeBody):  # input type passed to joint_action_policy
-                            controller_input_type = active_robot.composite_controller.joint_action_policy.input_type
-                        else:
-                            controller_input_type = active_robot.part_controllers[arm].input_type
+            action_dict = deepcopy(input_ac_dict)  # {}
+            # set arm actions
+            for arm in active_robot.arms:
+                if isinstance(active_robot.composite_controller, WholeBody):  # input type passed to joint_action_policy
+                    controller_input_type = active_robot.composite_controller.joint_action_policy.input_type
+                else:
+                    controller_input_type = active_robot.part_controllers[arm].input_type
 
-                        if controller_input_type == "delta":
-                            action_dict[arm] = input_ac_dict[f"{arm}_delta"]
-                        elif controller_input_type == "absolute":
-                            action_dict[arm] = input_ac_dict[f"{arm}_abs"]
-                        else:
-                            raise ValueError
+                if controller_input_type == "delta":
+                    action_dict[arm] = input_ac_dict[f"{arm}_delta"]
+                elif controller_input_type == "absolute":
+                    action_dict[arm] = input_ac_dict[f"{arm}_abs"]
+                else:
+                    raise ValueError
 
-                    # Maintain gripper state for each robot but only update the active robot with action
-                    env_action = [robot.create_action_vector(all_prev_gripper_actions[i]) for i, robot in enumerate(env.robots)]
-                    env_action[device.active_robot] = active_robot.create_action_vector(action_dict)
-                    env_action = np.concatenate(env_action)
-                    for gripper_ac in all_prev_gripper_actions[device.active_robot]:
-                        all_prev_gripper_actions[device.active_robot][gripper_ac] = action_dict[gripper_ac]
+            # Maintain gripper state for each robot but only update the active robot with action
+            env_action = [robot.create_action_vector(all_prev_gripper_actions[i]) for i, robot in enumerate(env.robots)]
+            env_action[device.active_robot] = active_robot.create_action_vector(action_dict)
+            env_action = np.concatenate(env_action)
+            for gripper_ac in all_prev_gripper_actions[device.active_robot]:
+                all_prev_gripper_actions[device.active_robot][gripper_ac] = action_dict[gripper_ac]
 
-                    env.step(env_action)
-                    # sync_joint_pos_with_kortex(env, left_base, left_base_cyclic, right_base, right_base_cyclic)
-      
-                    env.render()
+            env.step(env_action)
 
-                    # limit frame rate if necessary
-                    if args.max_fr is not None:
-                        elapsed = time.time() - start
-                        diff = 1 / args.max_fr - elapsed
-                        if diff > 0:
-                            time.sleep(diff)
-        except KeyboardInterrupt:
-            print("Ctrl+C pressed: Stopping the bases...")
-            left_base.Stop()
-            right_base.Stop()
+            env.render()
+
+            # limit frame rate if necessary
+            if args.max_fr is not None:
+                elapsed = time.time() - start
+                diff = 1 / args.max_fr - elapsed
+                if diff > 0:
+                    time.sleep(diff)
