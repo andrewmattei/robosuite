@@ -19,6 +19,10 @@ import mujoco
 import time
 import matplotlib.pyplot as plt
 
+import pinocchio as pin
+import pinocchio.casadi as cpin
+import robosuite.demos.optimizing_gen3_arm as opt
+
 class Kinova3ContactControl(ManipulationEnv):
     def __init__(
         self,
@@ -68,6 +72,19 @@ class Kinova3ContactControl(ManipulationEnv):
 
         # object placement initializer
         self.placement_initializer = placement_initializer
+
+        # cpin functions
+        # import cpin model
+        self.pin_model = None
+        self.pin_data = None
+        self.fk_fun = None
+        self.pos_fun = None
+        self.jac_fun = None
+        self.M_fun = None
+        self.C_fun = None
+        self.G_fun = None
+        self.pin_model, self.pin_data = opt.load_kinova_model()
+        self.fk_fun, self.pos_fun, self.jac_fun, self.M_fun, self.C_fun, self.G_fun = opt.build_casadi_kinematics_dynamics(self.pin_model)
 
         super().__init__(
             robots=robots,
@@ -275,6 +292,38 @@ class Kinova3ContactControl(ManipulationEnv):
                 obj_quat = np.array([1,0,0,0]) # remove the randomness in the orientation of the ball
                 self.sim.data.set_joint_qpos(obj.joints[0], np.concatenate([np.array(obj_pos), np.array(obj_quat)]))
 
+    def _compute_mass_matrix(self):
+        """Compute mass matrix using mj_fullM."""
+        M = np.zeros((self.sim.model.nv, self.sim.model.nv))
+        mujoco.mj_fullM(self.sim.model, M, self.sim.data.qM)
+        return M
+    
+
+    def _ee_pose_in_base(self, robot):
+        """
+        Computes the end-effector pose in the base frame.
+        Args:
+            robot (Robot): The robot object
+        Returns:
+            np.ndarray: The end-effector pose in the base frame
+        """
+        # Get the end-effector position and orientation
+        ee_body_id = self.sim.model.body_name2id(robot.robot_model.bodies[-1])
+        p_wd_ee = self.sim.data.body_xpos[ee_body_id]
+        R_wd_ee = self.sim.data.body_xmat[ee_body_id].reshape(3, 3)
+        H_wd_ee = np.eye(4)
+        H_wd_ee[:3, :3] = R_wd_ee
+        H_wd_ee[:3, 3] = p_wd_ee
+
+        # Get the base position and orientation
+        p_wd_base = robot.base_pos
+        R_wd_base = robot.base_ori
+        H_wd_base = np.eye(4)
+        H_wd_base[:3, :3] = R_wd_base
+        H_wd_base[:3, 3] = p_wd_base
+        
+        return np.linalg.inv(H_wd_base) @ H_wd_ee
+
 
     def _apply_gravity_compensation(self):
         """
@@ -294,12 +343,41 @@ class Kinova3ContactControl(ManipulationEnv):
         # mujoco.mj_rne(self.sim.model._model, self.sim.data._data, 0, gravity_torques_full)
 
         # For each robot, extract the relevant torques and assign them as control inputs
+        # for robot in self.robots:
+        #     indices = robot._ref_joint_pos_indexes
+        #     gravity_compensation = self.sim.data.qfrc_bias[indices]
+            
+        #     control_indices = robot._ref_arm_joint_actuator_indexes
+        #     self.sim.data.ctrl[control_indices] = gravity_compensation
+        
+        action_dict = OrderedDict()
+        # using pinocchio-casadi
         for robot in self.robots:
             indices = robot._ref_joint_pos_indexes
-            gravity_compensation = self.sim.data.qfrc_bias[indices]
+            q_curr = self.sim.data.qpos[indices]
+            qd_curr = self.sim.data.qvel[indices]
+            G_curr = self.G_fun(q_curr).full().flatten()
+            C_curr = self.C_fun(q_curr, qd_curr).full()
+            # M_curr = self.M_fun(q_curr).full()
+            # M_mujoco = self.sim.data.qM
+
+            action_dict[robot.arms[0]] = G_curr + C_curr @ qd_curr
+
+            # control_indices = robot._ref_arm_joint_actuator_indexes
+            # pin_bias = G_curr + C_curr @ qd_curr
+            # mujoco_bias = self.sim.data.qfrc_bias[indices]
+            # self.sim.data.ctrl[:] = G_curr + C_curr @ qd_curr
+            # self.sim.data.ctrl[control_indices] = self.sim.data.qfrc_bias[indices]
             
-            control_indices = robot._ref_arm_joint_actuator_indexes
-            self.sim.data.ctrl[control_indices] = gravity_compensation
+            # H_base_ee = self._ee_pose_in_base(robot)
+            # H_base_ee_cpin = opt.forward_kinematics_homogeneous(q_curr, self.fk_fun).full()
+            #debug
+            # if self.sim.data.time > 0.5:
+            #     print("G_curr", G_curr)
+            #     print("C_curr", C_curr)
+            #     pass
+        return action_dict
+
             
 class TimeKeeper:
     def __init__(self, desired_freq=60):
@@ -358,17 +436,17 @@ if __name__ == "__main__":
     desired_torso_height = env.init_torso_height
 
     # Preparing Input for the default_dual_kinova3 controller (HybridMobileBase)
-    action_dict = {}
-    for arm in active_robot.arms:
-        # got the following syntex from demo_sensor_corruption.py
-        if arm == "right":
-            action_dict[arm] = desired_arm_positions[:7]
-        if arm == "left":
-            action_dict[arm] = desired_arm_positions[7:]
-        action_dict[f"{arm}_gripper"] = np.zeros(active_robot.gripper[arm].dof)
+    # action_dict = {}
+    # for arm in active_robot.arms:
+    #     # got the following syntex from demo_sensor_corruption.py
+    #     if arm == "right":
+    #         action_dict[arm] = desired_arm_positions[:7]
+    #     if arm == "left":
+    #         action_dict[arm] = desired_arm_positions[7:]
+    #     action_dict[f"{arm}_gripper"] = np.zeros(active_robot.gripper[arm].dof)
 
-    action_dict["torso"] = np.array([desired_torso_height,])
-    action_dict["base"] = np.array([0.0, 0.0, 0.0])
+    # action_dict["torso"] = np.array([desired_torso_height,])
+    # action_dict["base"] = np.array([0.0, 0.0, 0.0])
 
     # env_action = active_robot.create_action_vector(action_dict)
     # assess action dimension
@@ -391,6 +469,18 @@ if __name__ == "__main__":
     contact_object = 'bounceball_g0'
 
     # ball_body_id = env.sim.model.body_name2id('bounceball_main')
+
+    ### compute inverse kinematics for desired impact location 
+    # example impact location
+    p_f = np.array([0.4, 0.0, 0.2])    # meters
+    v_f = np.array([0, 0, -0.5])   # m/s
+
+    q_init = env.robots[0].init_qpos
+
+    H_base_ee_f = opt.forward_kinematics_homogeneous(q_init, env.fk_fun).full()
+    H_base_ee_f[0:3, 3] = p_f
+    q_f = opt.inverse_kinematics_casadi(H_base_ee_f, env.fk_fun, q_init).full().flatten()
+
     
     with mujoco.viewer.launch_passive(model, data) as viewer:
         # Set initial camera parameters
@@ -411,7 +501,8 @@ if __name__ == "__main__":
                 
                 # data.ctrl[:] = 0  # Disable controller
                 
-                # env._apply_gravity_compensation()
+                action_dict = env._apply_gravity_compensation()
+                env_action = active_robot.create_action_vector(action_dict)
 
                 ####Controlling the ball ######
                 # obtaining free_joint_pose
@@ -419,6 +510,7 @@ if __name__ == "__main__":
                 # Apply a force to the ball
                 
                 # Step the simulation
+                env.sim.data.ctrl[:] = env_action
                 env.sim.step()
                 # mujoco.mj_step(model, data)
                 # env.step(env_action)

@@ -8,9 +8,12 @@ np.set_printoptions(precision=3, suppress=True)
 from scipy.interpolate import interp1d
 import os
 
+urdf_path = os.path.join(os.path.dirname(__file__), os.pardir, 'models', 'assets', 'robots',
+                                'dual_kinova3', 'leonardo.urdf')
+
 # ------------------------ Model loading ------------------------
 
-def load_kinova_model(urdf_path):
+def load_kinova_model(urdf_path=urdf_path):
     """
     Load the Kinova Gen3 URDF into a Pinocchio Model/Data pair.
     """
@@ -55,14 +58,19 @@ def pinocchio_to_standard_sx(model, q_pin):
     return q_std
 
 
-def build_casadi_kinematics_dynamics(model, data, frame_name):
+def build_casadi_kinematics_dynamics(model, frame_name=None):
     """
     Build CasADi functions (SX) for FK, Jacobian, dynamics (M, C, G) 
     accepting standard 7-DOF q_std and dq_std.
     """
     # Template model for SX
     cmodel = cpin.Model(model)
+
     cdata  = cmodel.createData()
+
+    # use the last frame (usually that means 'tool_frame')
+    if not frame_name:
+        frame_name = model.frames[-1].name
 
     # Symbolic standard-state variables
     q_std   = cs.SX.sym('q',   model.nv)
@@ -344,7 +352,7 @@ def optimize_trajectory_cartesian_accel_flex_pose(
 
     # Build modular CasADi functions
     fk_fun, pos_fun, J6_fun, M_fun, C_fun, G_fun = \
-        build_casadi_kinematics_dynamics(model, data, frame_name)
+        build_casadi_kinematics_dynamics(model, frame_name)
 
     # Define CasADi symbols
     q_sym  = cs.SX.sym('q',  nv)
@@ -425,17 +433,15 @@ def optimize_trajectory_cartesian_accel_flex_pose(
 
 if __name__ == "__main__":
     # Example usage
-    urdf_path = os.path.join(os.path.dirname(__file__), os.pardir, 'models', 'assets', 'robots',
-                                'dual_kinova3', 'leonardo.urdf')
     model, data = load_kinova_model(urdf_path)
-    fk_fun, pos_fun, jac_fun, M_fun, C_fun, G_fun = build_casadi_kinematics_dynamics(model, data, 'tool_frame')
+    fk_fun, pos_fun, jac_fun, M_fun, C_fun, G_fun = build_casadi_kinematics_dynamics(model, 'tool_frame')
 
-    # # Example FK
-    # q_test = np.ones(model.nv)*0.3
-    # # q_test_pin = standard_to_pinocchio(model, q_test)
-    # fk_result = forward_kinematics_homogeneous(q_test, fk_fun)
-    # # display result
-    # print("FK result:\n", fk_result.full())
+    # Example FK
+    q_test = np.ones(model.nv)*0.0
+    # q_test_pin = standard_to_pinocchio(model, q_test)
+    fk_result = forward_kinematics_homogeneous(q_test, fk_fun)
+    # display result
+    print("FK result:\n", fk_result.full())
 
 
     # example optimization
