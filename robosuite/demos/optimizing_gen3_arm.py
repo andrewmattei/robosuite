@@ -7,6 +7,7 @@ import numpy as np
 np.set_printoptions(precision=3, suppress=True)
 from scipy.interpolate import interp1d
 import os
+from matplotlib import pyplot as plt
 
 urdf_path = os.path.join(os.path.dirname(__file__), os.pardir, 'models', 'assets', 'robots',
                                 'dual_kinova3', 'leonardo.urdf')
@@ -294,8 +295,82 @@ def save_solution_to_npy(solution: dict, filename: str):
     np.savez(filename, **solution)
 
 
-def display_and_save_solution(solution: dict, filename: str=None):
-    raise NotImplementedError("Adapt plotting code for 7DOF.")
+def display_and_save_solution(solution: dict, J6_fun, filename: str=None):
+    """
+    Display kinematic and dynamic results for a 7-DOF Gen3 solution and optionally save to disk.
+
+    Args:
+        solution : dict returned by optimize_trajectory_cartesian_accel_flex_pose
+        filename : if given, saves {T_opt, Z_opt, U_opt} as a .npz under this name
+    """
+
+    # Unpack
+    q   = solution['q']    # (7, N+1)
+    dq  = solution['dq']   # (7, N+1)
+    tau = solution['tau']  # (7, N)
+    T   = solution['t_f']
+
+    # Time vector
+    Np1   = q.shape[1]
+    T_opt = np.linspace(0, T, Np1)
+
+    # Compute linear portion of EEF velocity
+    v_ee = np.zeros((3, Np1))
+    for k in range(Np1):
+        qk  = q[:, k]
+        dqk = dq[:, k]
+        J6k = J6_fun(qk)              # 6×7
+        v_ee[:, k] = np.array(J6k[0:3, :]) @ dqk
+    v_ee_mag = np.linalg.norm(v_ee, axis=0)
+
+    # Densify the state trajectory for smooth plotting
+    Z_opt   = np.vstack((q, dq))                 # (14, N+1)
+    U_opt   = np.hstack((tau, tau[:, -1:]))      # pad to (7, N+1)
+
+    # Save the trajectory data
+    trajectory_data = {
+        'T_opt': T_opt,
+        'Z_opt': Z_opt,
+        'U_opt': U_opt,
+    }
+
+    # Save if requested
+    if filename:
+        curr = os.path.dirname(os.path.realpath(__file__))
+        path = os.path.join(curr, filename)
+        np.save(path, trajectory_data)
+        print(f"Saved trajectory data to {path}")
+
+    # Plotting
+    plt.figure(figsize=(8, 10))
+
+    # 1) Joint torques
+    plt.subplot(4, 1, 1)
+    plt.plot(T_opt[:-1], tau.T)
+    plt.ylabel('Torque (Nm)')
+
+    # 2) EEF speed magnitude
+    plt.subplot(4, 1, 2)
+    plt.plot(T_opt, v_ee_mag)
+    plt.ylabel('EEF speed (m/s)')
+
+    # 3) EEF velocity components
+    plt.subplot(4, 1, 3)
+    for i in range(3):
+        plt.plot(T_opt, v_ee[i, :], label=f'v_ee[{i}]')
+    plt.legend()
+    plt.ylabel('EEF vel components')
+
+    # 4) Joint angles
+    plt.subplot(4, 1, 4)
+    for j in range(7):
+        plt.plot(T_opt, q[j, :], label=f'q{j+1}')
+    plt.legend(ncol=2)
+    plt.xlabel('Time (s)')
+    plt.ylabel('Joint angles (rad)')
+
+    plt.tight_layout()
+    plt.show()
 
 # ------------------------ Planar‐specific stubs ------------------------
 
@@ -396,21 +471,26 @@ def optimize_trajectory_cartesian_accel_flex_pose(
         opti.subject_to(dq_lower  <= dQ[:, k]); opti.subject_to(dQ[:, k]  <= dq_upper)
         opti.subject_to(tau_lower <= ta_k);   opti.subject_to(ta_k         <= tau_upper)
 
-        # End-effector linear velocity cost
-        v_ee = J6_fun(qn)[0:3, :] @ dqn
-        total_cost += -cs.sumsqr(v_ee) * weight_v
 
         # Cartesian acceleration cost (ramped)
-        xdd_k = xdd_fun(qn, dqn, ta_k)
-        total_cost += cs.sumsqr(xdd_k[0:3]) * weight_xdd * ((k/float(N))**2)
+        # xdd_k = xdd_fun(qn, dqn, ta_k)
+        # total_cost += cs.sumsqr(xdd_k[0:3]) * weight_xdd * ((k/float(N))**2)
 
         # Torque smoothness
         if k < N-1:
+             # End-effector linear velocity cost
+            v_ee = J6_fun(qn)[0:3, :] @ dqn
+            total_cost += -cs.sumsqr(v_ee) * weight_v
+
             total_cost += weight_tau_smooth * cs.sumsqr(Tau[:, k+1] - ta_k)
 
         # Terminal deceleration boost
         if k == N-1:
-            total_cost += weight_terminal * cs.sumsqr(xdd_k[0:3]) * N
+            # total_cost += weight_terminal * cs.sumsqr(xdd_k[0:3]) * N
+
+            # make ee angular velocity zero
+            omega_ee = J6_fun(qn)[3:6, :] @ dqn
+            total_cost += weight_terminal * cs.sumsqr(omega_ee) * N
 
     # Start from rest
     opti.subject_to(dQ[:, 0] == 0)
@@ -463,8 +543,9 @@ if __name__ == "__main__":
     print("Resulted pose from IK:\n", resulted_pose.full())
 
     # 3) Extract bounds from model (example values here; replace with real ones)
-    q_lower   =  pinocchio_to_standard(model, model.lowerPositionLimit)
-    q_upper   =  pinocchio_to_standard(model, model.upperPositionLimit)
+    rev_lim = np.pi
+    q_lower   =  np.array([-rev_lim, -2.41, -rev_lim, -2.66, -rev_lim, -2.23, -rev_lim])
+    q_upper   =  np.array([ rev_lim,  2.41,  rev_lim,  2.66,  rev_lim,  2.23,  rev_lim])
     dq_lower  =  -model.velocityLimit
     dq_upper  =  model.velocityLimit
     tau_lower =  -model.effortLimit
@@ -498,10 +579,10 @@ if __name__ == "__main__":
     )
 
     # 6) Unpack and replay
-    q_opt   = solution['q']     # shape (7, N+1)
-    dq_opt  = solution['dq']    # shape (7, N+1)
-    tau_opt = solution['tau']   # shape (7, N)
+    display_and_save_solution(
+        solution, jac_fun,
+        filename='kinova_gen3_opt_trajectory_flex_pose'
+    )
 
     # e.g. send (q_opt[:,k], dq_opt[:,k]) at each control tick,
     # or forward‐kinematics to plot end-effector path
-    ee_path = [forward_kinematics_homogeneous(q_opt[:,k]).full()[0:3,3].flatten() for k in range(q_opt.shape[1]) ]

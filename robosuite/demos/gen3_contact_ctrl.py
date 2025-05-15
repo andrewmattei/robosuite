@@ -86,6 +86,8 @@ class Kinova3ContactControl(ManipulationEnv):
         self.pin_model, self.pin_data = opt.load_kinova_model()
         self.fk_fun, self.pos_fun, self.jac_fun, self.M_fun, self.C_fun, self.G_fun = opt.build_casadi_kinematics_dynamics(self.pin_model)
 
+        self.init_jogging = True
+
         super().__init__(
             robots=robots,
             env_configuration=env_configuration,
@@ -330,53 +332,83 @@ class Kinova3ContactControl(ManipulationEnv):
         Computes the control needed to compensate for gravity to hold the arm in place.
         and applies it to the robot.
         """
-        # Zero out accelerations for the full simulation (ensure the state is appropriate)
-        # self.sim.data.qacc[:] = 0
-
-        # Get the total number of degrees of freedom from the raw MuJoCo model
-        # n_dof = self.sim.model._model.nv
-
-        # # Preallocate a 2D column vector for the computed torques with shape (n_dof, 1)
-        # gravity_torques_full = np.zeros((n_dof, 1), dtype=np.float64)
-
-        # # Use the underlying raw model and data objects (successful but not needed)
-        # mujoco.mj_rne(self.sim.model._model, self.sim.data._data, 0, gravity_torques_full)
-
-        # For each robot, extract the relevant torques and assign them as control inputs
-        # for robot in self.robots:
-        #     indices = robot._ref_joint_pos_indexes
-        #     gravity_compensation = self.sim.data.qfrc_bias[indices]
-            
-        #     control_indices = robot._ref_arm_joint_actuator_indexes
-        #     self.sim.data.ctrl[control_indices] = gravity_compensation
         
         action_dict = OrderedDict()
         # using pinocchio-casadi
-        for robot in self.robots:
-            indices = robot._ref_joint_pos_indexes
-            q_curr = self.sim.data.qpos[indices]
-            qd_curr = self.sim.data.qvel[indices]
-            G_curr = self.G_fun(q_curr).full().flatten()
-            C_curr = self.C_fun(q_curr, qd_curr).full()
-            # M_curr = self.M_fun(q_curr).full()
-            # M_mujoco = self.sim.data.qM
+        active_robot = self.robots[0]
+        indices = active_robot._ref_joint_pos_indexes
+        q_curr = self.sim.data.qpos[indices]
+        qd_curr = self.sim.data.qvel[indices]
+        G_curr = self.G_fun(q_curr).full().flatten()
+        C_curr = self.C_fun(q_curr, qd_curr).full()
+        # M_curr = self.M_fun(q_curr).full()
+        # M_mujoco = self.sim.data.qM
 
-            action_dict[robot.arms[0]] = G_curr + C_curr @ qd_curr
+        action_dict[active_robot.arms[0]] = G_curr + C_curr @ qd_curr
 
-            # control_indices = robot._ref_arm_joint_actuator_indexes
-            # pin_bias = G_curr + C_curr @ qd_curr
-            # mujoco_bias = self.sim.data.qfrc_bias[indices]
-            # self.sim.data.ctrl[:] = G_curr + C_curr @ qd_curr
-            # self.sim.data.ctrl[control_indices] = self.sim.data.qfrc_bias[indices]
-            
-            # H_base_ee = self._ee_pose_in_base(robot)
-            # H_base_ee_cpin = opt.forward_kinematics_homogeneous(q_curr, self.fk_fun).full()
-            #debug
-            # if self.sim.data.time > 0.5:
-            #     print("G_curr", G_curr)
-            #     print("C_curr", C_curr)
-            #     pass
+        # control_indices = robot._ref_arm_joint_actuator_indexes
+        # pin_bias = G_curr + C_curr @ qd_curr
+        # mujoco_bias = self.sim.data.qfrc_bias[indices]
+        # self.sim.data.ctrl[:] = G_curr + C_curr @ qd_curr
+        # self.sim.data.ctrl[control_indices] = self.sim.data.qfrc_bias[indices]
+        
+        # H_base_ee = self._ee_pose_in_base(robot)
+        # H_base_ee_cpin = opt.forward_kinematics_homogeneous(q_curr, self.fk_fun).full()
+        #debug
+        # if self.sim.data.time > 0.5:
+        #     print("G_curr", G_curr)
+        #     print("C_curr", C_curr)
+        #     pass
         return action_dict
+    
+    def inverse_dynamics(self, ddq_des):
+        """
+        Computes the inverse dynamics for the given joint accelerations.
+        Args:
+            ddq_des (np.ndarray): Desired joint accelerations
+        Returns:
+            np.ndarray: Joint torques
+        """
+        active_robot = self.robots[0]
+        indices = active_robot._ref_joint_pos_indexes
+        q_curr = self.sim.data.qpos[indices]
+        qd_curr = self.sim.data.qvel[indices]
+        G_curr = self.G_fun(q_curr).full().flatten()
+        C_curr = self.C_fun(q_curr, qd_curr).full()
+        M_curr = self.M_fun(q_curr).full()
+
+        tau = M_curr @ ddq_des + C_curr @ qd_curr + G_curr
+        return tau
+    
+
+    def pid_joint_jog(self, q_desired, Kp=80, Kd=30, tol = 0.001):
+        """
+        PID control for joint jogging.
+        Args:
+            q_desired (np.ndarray): Desired joint positions
+            q_current (np.ndarray): Current joint positions
+            qd_current (np.ndarray): Current joint velocities
+            Kp (float): Proportional gain
+            Kd (float): Derivative gain
+        Returns:
+            np.ndarray: Control action
+        """
+        active_robot = self.robots[0]
+        indices = active_robot._ref_joint_pos_indexes
+        q_curr = self.sim.data.qpos[indices]
+        qd_curr = self.sim.data.qvel[indices]
+        error = q_desired - q_curr
+        ddq_des = Kp * error - Kd * qd_curr
+        
+        if np.linalg.norm(error) < tol:
+            self.init_jogging = False
+       
+        if self.init_jogging:
+            torque = self.inverse_dynamics(ddq_des)
+            # print("pid error:", np.linalg.norm(error))
+        else:
+            torque = self.inverse_dynamics(np.zeros_like(ddq_des))
+        return torque
 
             
 class TimeKeeper:
@@ -405,7 +437,7 @@ class TimeKeeper:
 if __name__ == "__main__":
 
     simulation_time = 10.0 # seconds
-    env_step_size = 0.0001 # seconds
+    env_step_size = 0.001 # seconds
     horizon = int(simulation_time / env_step_size)
     # Create environment
     # note default controller is in "robosuite/controllers/config/robots/default_dualkinova3.json"
@@ -435,24 +467,6 @@ if __name__ == "__main__":
 
     desired_torso_height = env.init_torso_height
 
-    # Preparing Input for the default_dual_kinova3 controller (HybridMobileBase)
-    # action_dict = {}
-    # for arm in active_robot.arms:
-    #     # got the following syntex from demo_sensor_corruption.py
-    #     if arm == "right":
-    #         action_dict[arm] = desired_arm_positions[:7]
-    #     if arm == "left":
-    #         action_dict[arm] = desired_arm_positions[7:]
-    #     action_dict[f"{arm}_gripper"] = np.zeros(active_robot.gripper[arm].dof)
-
-    # action_dict["torso"] = np.array([desired_torso_height,])
-    # action_dict["base"] = np.array([0.0, 0.0, 0.0])
-
-    # env_action = active_robot.create_action_vector(action_dict)
-    # assess action dimension
-    # to inspect use
-    # print(active_robot.composite_controller._action_split_indexes)
-
 
     # Get model and data
     model = env.sim.model._model
@@ -472,7 +486,7 @@ if __name__ == "__main__":
 
     ### compute inverse kinematics for desired impact location 
     # example impact location
-    p_f = np.array([0.4, 0.0, 0.2])    # meters
+    p_f = np.array([0.4, 0.0, 0.1])    # meters
     v_f = np.array([0, 0, -0.5])   # m/s
 
     q_init = env.robots[0].init_qpos
@@ -501,8 +515,8 @@ if __name__ == "__main__":
                 
                 # data.ctrl[:] = 0  # Disable controller
                 
-                action_dict = env._apply_gravity_compensation()
-                env_action = active_robot.create_action_vector(action_dict)
+                torque = env.pid_joint_jog(q_f)
+                env_action = np.clip(torque, -env.pin_model.effortLimit, env.pin_model.effortLimit)
 
                 ####Controlling the ball ######
                 # obtaining free_joint_pose
