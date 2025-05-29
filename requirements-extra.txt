@@ -34,3 +34,6 @@ imageio[pyav]
 
 #for plotting
 matplotlib
+
+# for ipykernel
+ipykernel

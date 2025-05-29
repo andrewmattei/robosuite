@@ -16,12 +16,31 @@ from robosuite.controllers import load_part_controller_config
 from robosuite.controllers import load_composite_controller_config
 
 import mujoco
-import time
+import time, os
 import matplotlib.pyplot as plt
 
 import pinocchio as pin
 import pinocchio.casadi as cpin
 import robosuite.demos.optimizing_gen3_arm as opt
+
+# Load reference trajectory
+current_path = os.path.dirname(os.path.realpath(__file__))
+traj_names = ["kinova_gen3_opt_trajectory_flex_pose.npy"]
+
+##########################
+#######ADJUST HERE########
+play_traj = 0
+##########################
+opt_save_path = os.path.join(current_path, traj_names[play_traj])
+opt_trajectory_data = np.load(opt_save_path, allow_pickle=True).item()
+
+plot_save_path = os.path.join(current_path, 'plots', traj_names[play_traj].replace('.npy', '.png'))
+# Create plots directory if it doesn't exist
+if not os.path.exists(os.path.dirname(plot_save_path)):
+    os.makedirs(os.path.dirname(plot_save_path))
+
+
+
 
 class Kinova3ContactControl(ManipulationEnv):
     def __init__(
@@ -87,6 +106,10 @@ class Kinova3ContactControl(ManipulationEnv):
         self.fk_fun, self.pos_fun, self.jac_fun, self.M_fun, self.C_fun, self.G_fun = opt.build_casadi_kinematics_dynamics(self.pin_model)
 
         self.init_jogging = True
+        self.viewer = None
+        
+        # for LQR controller
+        self.linearization_cache = None
 
         super().__init__(
             robots=robots,
@@ -112,6 +135,26 @@ class Kinova3ContactControl(ManipulationEnv):
             camera_depths=camera_depths,
             camera_segmentations=camera_segmentations,
         )
+
+        self.gui_on = True
+
+    def _configure_viewer(self):
+        """Configure the viewer camera."""
+        self.viewer.cam.distance = 3.0
+        self.viewer.cam.azimuth = 120
+        self.viewer.cam.elevation = -45
+        self.viewer.cam.lookat[:] = np.array([0.0, -0.25, 0.824])
+        self.viewer.opt.geomgroup = np.array([0,1,1,0,0,0]) # disabled the geom1 collision body visual
+
+    
+
+    def _configure_camera(self):
+        self.cam.distance = 4.0
+        self.cam.azimuth = 90
+        self.cam.elevation = -90
+        self.cam.lookat[:] = np.array([0.2, 0.2, 0.0])
+        # self.cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
+
 
     def reward(self, action):
         """
@@ -325,6 +368,32 @@ class Kinova3ContactControl(ManipulationEnv):
         H_wd_base[:3, 3] = p_wd_base
         
         return np.linalg.inv(H_wd_base) @ H_wd_ee
+    
+
+    def _ee_twist_in_base(self, robot):
+        """
+        Computes the end-effector velocity in the base frame.
+        Args:
+            robot (Robot): The robot object
+        Returns:
+            np.ndarray: The end-effector velocity in the base frame
+        """
+        model = self.sim.model
+        data = self.sim.data
+        # Get the end-effector velocity
+        site_id = model.site_name2id(robot.robot_model.sites[-1])
+        # note that we don't know if the jacobian is in the base frame or not
+        # Get end-effector velocity
+        jacp = np.zeros((3, model.nv))
+        jacr = np.zeros((3, model.nv))
+        mujoco.mj_jacSite(model._model, data._data, jacp, jacr, site_id)
+        indices = robot._ref_joint_pos_indexes
+        jacp = jacp[:, indices]
+        jacr = jacr[:, indices]
+        ee_vel = jacp @ data.qvel[indices]
+        ee_omega = jacr @ data.qvel[indices]
+        
+        return ee_vel, ee_omega
 
 
     def _apply_gravity_compensation(self):
@@ -409,32 +478,550 @@ class Kinova3ContactControl(ManipulationEnv):
         else:
             torque = self.inverse_dynamics(np.zeros_like(ddq_des))
         return torque
+    
+    
+    def optimal_trajectory_tracking_ctrl(self, current_time, T_opt, U_opt, Z_opt):
+        """
+        Compute torque commands to track a precomputed Gen3 trajectory.
+        Uses feedforward torques from U_opt and simple PD feedback on joint error.
+        """
+        # 1. Interpolate feedforward torque and reference state
+        tau_ref, z_ref = opt.match_trajectories(current_time, T_opt, U_opt, T_opt, Z_opt)
+        tau_ref = tau_ref.flatten()
+        
+        # Split z_ref into positions and velocities
+        n = tau_ref.size
+        q_ref  = z_ref[:n].flatten()
+        dq_ref = z_ref[n:].flatten()
+        
+        # 2. Read current joint state
+        robot    = self.robots[0]
+        idxs     = robot._ref_joint_pos_indexes
+        q_curr   = self.sim.data.qpos[idxs]
+        dq_curr  = self.sim.data.qvel[idxs]
+        
+        # 3. PD gains (tweak as needed)
+        # Kp, Kd = 80.0, 5.0
+        Kp, Kd = 80.0, 5.0  # for when tau_fb is used
+        
+        # 4. Compute feedback
+        q_err  = q_ref  - q_curr
+        dq_err = dq_ref - dq_curr
+        ddq_des = Kp * q_err + Kd * dq_err
+        tau_fb = self.inverse_dynamics(ddq_des)
+        
+        # 5. Total command
+        tau = tau_fb
+        
+        # 6. Zero out after trajectory ends
+        if current_time > T_opt[-1]:
+            # print("Trajectory ended, zeroing out torques")
+            tau = self.inverse_dynamics(np.zeros_like(ddq_des))
+        
+        return tau
+    
+
+    def lqr_tracking_controller(self, current_time, T_opt, U_opt, Z_opt, horizon=100):
+        """
+        Real-time LQR controller that interpolates Z_opt and U_opt.
+        Assumes self.linearization_cache holds (A_list, B_list).
+        """
+        # Make sure we've already called linearize_dynamics_along_trajectory
+        if self.linearization_cache is None:
+            raise RuntimeError("Call linearize_dynamics_along_trajectory before using this controller.")
+
+        A_list, B_list = self.linearization_cache
+
+        # 1) Interpolate feed-forward torque and reference state
+        u_ff, z_ref = opt.match_trajectories(current_time, T_opt, U_opt, T_opt, Z_opt)
+
+        # 2) Find index for selecting local linearization
+        idx = np.searchsorted(T_opt, current_time)
+        idx = min(max(idx, 0), len(A_list) - 1)
+
+        # 3) Build cost weights (tune these as needed)
+        state_dim   = Z_opt.shape[0]    # e.g. 14 for Gen3 (7 q + 7 dq)
+        control_dim = U_opt.shape[0]    # e.g. 7 joints
+        Q = np.eye(state_dim)
+        R = np.eye(control_dim) * 1e-5
+
+        # 4) Backward Riccati recursion over a short finite horizon
+        P = Q.copy()
+        K_seq = []
+        for k in reversed(range(horizon)):
+            if k == horizon - 1:
+                P = 10 * Q
+            j = min(idx + k, len(A_list) - 1)
+            A = A_list[j]
+            B = B_list[j]
+            K = np.linalg.inv(R + B.T @ P @ B) @ (B.T @ P @ A)
+            P = Q + A.T @ P @ (A - B @ K)
+            K_seq.insert(0, K)
+
+        # 5) First feedback gain
+        K0 = K_seq[0]
+
+        # 6) Read current joint state
+        robot   = self.robots[0]
+        idxs    = robot._ref_joint_pos_indexes
+        q_curr  = self.sim.data.qpos[idxs]
+        dq_curr = self.sim.data.qvel[idxs]
+        z_curr  = np.hstack((q_curr, dq_curr))
+
+        # 7) Compute LQR command: u = u_ff – K0 · (z_curr – z_ref)
+        tau = u_ff.flatten() - K0 @ (z_curr - z_ref.flatten())
+
+        # 8) Zero out after trajectory end
+        if current_time > T_opt[-1]:
+            tau = self.inverse_dynamics(np.zeros_like(dq_curr))
+
+        return tau
+    
+
+    def run_pid_jogging_simulation(self, q_desired, 
+                             Kp=80, Kd=30, 
+                             tol=0.001,
+                             sim_dt=1e-3,
+                             record_dt=1e-3,
+                             max_time=50.0,
+                             slow_factor=1.0):
+        """
+        Run PID joint jogging simulation until reaching desired joint positions.
+        """
+        model = self.sim.model._model
+        data  = self.sim.data._data
+        model.opt.timestep = sim_dt
+        robot = self.robots[0]
+
+        # Initialize viewer if GUI is on
+        if self.gui_on:
+            self.viewer = mujoco.viewer.launch_passive(model, data)
+            self._configure_viewer()
+
+        # Compute record steps
+        record_steps = max(1, int(record_dt / sim_dt))
+        step_count = 0
+
+        # Storage for logs
+        times = []
+        q_pos = []
+        q_vel = []
+        ee_pos = []
+        ee_vel = []
+        tau_log = []
+        contact_forces = []
+
+        # Reset simulation time
+        data.time = 0.0
+        self.init_jogging = True  # Reset jogging flag
+
+        # Run until reaching target or timeout
+        while data.time < max_time:
+            mujoco.mj_forward(model, data)
+
+            if step_count % record_steps == 0:
+                # Get current state
+                indices = robot._ref_joint_pos_indexes
+
+
+                # Compute control
+                tau = self.pid_joint_jog(q_desired, Kp=Kp, Kd=Kd, tol=tol)
+                
+                # Clip torques
+                tau = np.clip(tau, robot.torque_limits[0], robot.torque_limits[1])
+
+                if self.init_jogging:
+                    # Log data
+                    q_pos.append(data.qpos[indices].copy())
+                    q_vel.append(data.qvel[indices].copy())
+
+                    # Get end-effector state
+                    H_base_ee = self._ee_pose_in_base(robot)
+                    ee_pos.append(H_base_ee[:3, 3].copy())
+
+                    ee_v, ee_w = self._ee_twist_in_base(robot)
+                    ee_vel.append(ee_v.copy())
+
+                    # Store torques and time
+                    tau_log.append(tau.copy())
+                    times.append(data.time)
+                
+                # Apply control
+                data.ctrl[:] = tau
+
+                # GUI update
+                if self.gui_on:
+                    with self.viewer.lock():
+                        self.viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
+                    self.viewer.sync()
+                    time.sleep(record_dt * slow_factor)
+
+            # Step simulation
+            mujoco.mj_step(model, data)
+            step_count += 1
+
+        if self.gui_on:
+            self.viewer.close()
+
+        # Create target trajectory for plotting
+        T_opt = np.array(times)
+        ee_pos_opt = np.tile(ee_pos[-1], (len(times), 1))  # Use final EE pos as target
+        ee_vel_opt = np.zeros_like(ee_pos_opt)  # Zero target velocity
+        U_opt = np.zeros((robot.dof, len(times)))  # Zero target torques
+        q_opt = np.tile(q_desired, (len(times), 1)).T  # Use desired joint pos as target
+        dq_opt = np.zeros((robot.dof, len(times)))  # Zero target velocities
+        Z_opt = np.vstack((q_opt, dq_opt))  # Combine positions and velocities
+
+        return {
+            'times':           np.array(times),
+            'q_pos':           np.array(q_pos),
+            'q_vel':           np.array(q_vel),
+            'ee_pos':          np.array(ee_pos),
+            'ee_vel':          np.array(ee_vel),
+            'tau':             np.array(tau_log),
+            'contact_forces':  np.array(contact_forces),
+            'times_opt':       T_opt,
+            'tau_opt':         U_opt,
+            'Z_opt':          Z_opt,    
+            'ee_pos_opt':      ee_pos_opt,
+            'ee_vel_opt':      ee_vel_opt,
+        }
+    
+
+    def run_simulation_offscreen(self, T_opt, U_opt, Z_opt,
+                                slow_factor=1.0,
+                                sim_dt=1e-4, 
+                                record_dt=1e-3):
+        """
+        Headless rollout following (T_opt, U_opt, Z_opt).
+        Logs at intervals of record_dt using sim_dt to compute record_steps.
+        """
+        model = self.sim.model._model
+        data  = self.sim.data._data
+        model.opt.timestep = sim_dt
+        robot = self.robots[0]
+
+        # Initialize viewer
+        if self.gui_on:
+            self.viewer = mujoco.viewer.launch_passive(self.sim.model._model, self.sim.data._data)
+            self._configure_viewer()
+
+
+        # compute how many sim steps between records
+        record_steps = max(1, int(record_dt / sim_dt))
+        step_count   = 0
+
+        # prepare storage
+        times, q_pos, q_vel, ee_pos, ee_vel, tau_log, contact_forces = [], [], [], [], [], [], []
+
+        # precompute desired EE states
+        num = len(T_opt)
+        ee_pos_opt = np.zeros((num, 3))
+        ee_vel_opt = np.zeros((num, 3))
+        for k in range(num):
+            qk  = Z_opt[:robot.dof, k]
+            dqk = Z_opt[robot.dof:, k]
+            ee_pos_opt[k] = self.pos_fun(qk).full().flatten()
+            jac_pos = self.jac_fun(qk)[0:3, :]
+            ee_vel_opt[k] = (jac_pos @ dqk).full().flatten()
+
+        # reset sim to initial state
+        arm_indices = robot._ref_joint_pos_indexes
+        data.qpos[arm_indices] = Z_opt[:robot.dof, 0]
+        data.qvel[arm_indices] = Z_opt[robot.dof:, 0]
+        data.time    = 0.0
+
+
+        # run until just past final time
+        while data.time < T_opt[-1] * 1.05:
+            mujoco.mj_forward(model, data)
+
+            # only record every record_steps
+            if step_count % record_steps == 0:
+                # control
+                if self.linearization_cache is not None:
+                    tau = self.lqr_tracking_controller(
+                        data.time, T_opt, U_opt, Z_opt)
+                else:
+                    tau = self.optimal_trajectory_tracking_ctrl(
+                        data.time, T_opt, U_opt, Z_opt)
+                
+                # bound torques
+                tau = np.clip(tau, robot.torque_limits[0], robot.torque_limits[1])
+
+                # joint log
+                q_pos.append(data.qpos[arm_indices].copy())
+                q_vel.append(data.qvel[arm_indices].copy())
+
+                # end-effector position
+                H_base_ee = self._ee_pose_in_base(robot)
+                ee_pos.append(H_base_ee[:3, 3].copy())
+
+                # end-effector velocity via Jacobian
+                ee_v, ee_w = self._ee_twist_in_base(robot)
+                ee_vel.append(ee_v.copy())
+
+                # torques and summed contact force magnitude
+                tau_log.append(tau.copy())
+                times.append(data.time)
+                
+                data.ctrl[:] = tau
+
+            # step
+            mujoco.mj_step(model, data)
+            # model.opt.timestep = sim_dt
+            step_count += 1
+            if self.gui_on and step_count %record_steps == 0:
+                with self.viewer.lock():
+                    self.viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
+                self.viewer.sync()
+                time.sleep(record_dt * slow_factor)
+
+        if self.gui_on:
+            self.viewer.close()
+
+        return {
+            'times':           np.array(times),
+            'q_pos':           np.array(q_pos),
+            'q_vel':           np.array(q_vel),
+            'ee_pos':          np.array(ee_pos),
+            'ee_vel':          np.array(ee_vel),
+            'tau':             np.array(tau_log),
+            'contact_forces':  np.array(contact_forces),
+            'times_opt':       T_opt,
+            'tau_opt':         U_opt,
+            'Z_opt':          Z_opt,
+            'ee_pos_opt':      ee_pos_opt,
+            'ee_vel_opt':      ee_vel_opt,
+        }
+    
+
+    def plot_joints(self, sim_data):
+        """
+        Plot individual joint positions and velocities in a 7x2 grid.
+        Left column: Position (desired vs actual)
+        Right column: Velocity (desired vs actual)
+        """
+        # Color definitions for joints
+        colors = {
+            'joint1': '#1f77b4',    # bright blue
+            'joint2': '#ff7f0e',    # bright orange
+            'joint3': '#2ca02c',    # bright green
+            'joint4': '#d62728',    # bright red
+            'joint5': '#9467bd',    # purple
+            'joint6': '#8c564b',    # brown
+            'joint7': '#e377c2',    # pink
+        }
+
+        # unpack
+        t        = sim_data['times']
+        q_pos    = sim_data['q_pos']
+        q_vel    = sim_data['q_vel']
+        T_opt    = sim_data['times_opt']
+        Z_opt    = sim_data['Z_opt']
+        dof      = q_pos.shape[1]
+
+        # Create figure with 7x2 subplots
+        fig, axes = plt.subplots(7, 2, figsize=(15, 20))
+        plt.subplots_adjust(hspace=0.3)
+
+        for j in range(dof):
+            # Position trajectory for joint j
+            q_des = np.interp(t, T_opt, Z_opt[j,:])
+            axes[j,0].plot(t, q_pos[:,j], color=colors[f'joint{j+1}'], 
+                        label='actual', linewidth=2)
+            axes[j,0].plot(t, q_des, '--', color=colors[f'joint{j+1}'], 
+                        label='desired', linewidth=2)
+            axes[j,0].set_ylabel(f'J{j+1} Pos (rad)')
+            axes[j,0].grid(True)
+            if j == 0:  # Only add legend to first subplot
+                axes[j,0].legend()
+            
+            # Add RMS tracking error to title
+            rms_err = np.sqrt(np.mean((q_des - q_pos[:,j])**2))
+            axes[j,0].set_title(f'Position (RMS error: {rms_err:.3f} rad)')
+
+            # Velocity trajectory for joint j
+            dq_des = np.interp(t, T_opt, Z_opt[j+dof,:])
+            axes[j,1].plot(t, q_vel[:,j], color=colors[f'joint{j+1}'], 
+                        label='actual', linewidth=2)
+            axes[j,1].plot(t, dq_des, '--', color=colors[f'joint{j+1}'], 
+                        label='desired', linewidth=2)
+            axes[j,1].set_ylabel(f'J{j+1} Vel (rad/s)')
+            axes[j,1].grid(True)
+            if j == 0:  # Only add legend to first subplot
+                axes[j,1].legend()
+            
+            # Add RMS tracking error to title
+            rms_err = np.sqrt(np.mean((dq_des - q_vel[:,j])**2))
+            axes[j,1].set_title(f'Velocity (RMS error: {rms_err:.3f} rad/s)')
+
+        # Add common x-label
+        for ax in axes[-1,:]:
+            ax.set_xlabel('Time (s)')
+
+        plt.suptitle('Joint Positions and Velocities', fontsize=16)
+        plt.tight_layout()
+        plt.show()
+
+    
+    def plot_joint_errors(self, sim_data):
+        """
+        Plot individual joint position and velocity errors in a 7x2 grid.
+        Left column: Position errors
+        Right column: Velocity errors
+        """
+        # Color definitions for joints
+        colors = {
+            'joint1': '#1f77b4',    # bright blue
+            'joint2': '#ff7f0e',    # bright orange
+            'joint3': '#2ca02c',    # bright green
+            'joint4': '#d62728',    # bright red
+            'joint5': '#9467bd',    # purple
+            'joint6': '#8c564b',    # brown
+            'joint7': '#e377c2',    # pink
+        }
+
+        # unpack
+        t        = sim_data['times']
+        q_pos    = sim_data['q_pos']
+        q_vel    = sim_data['q_vel']
+        T_opt    = sim_data['times_opt']
+        dof      = q_pos.shape[1]
+
+        # Create figure with 7x2 subplots
+        fig, axes = plt.subplots(7, 2, figsize=(15, 20))
+        plt.subplots_adjust(hspace=0.3)
+
+        for j in range(dof):
+            # Position error for joint j
+            q_des = np.interp(t, T_opt, Z_opt[j,:])
+            q_err = q_des - q_pos[:,j]
+            axes[j,0].plot(t, q_err, color=colors[f'joint{j+1}'], linewidth=2)
+            axes[j,0].set_ylabel(f'J{j+1} Pos Err (rad)')
+            axes[j,0].grid(True)
+            
+            # Add RMS error to title
+            rms_err = np.sqrt(np.mean(q_err**2))
+            axes[j,0].set_title(f'Position Error (RMS: {rms_err:.3f} rad)')
+
+            # Velocity error for joint j
+            dq_des = np.interp(t, T_opt, Z_opt[j+dof,:])
+            dq_err = dq_des - q_vel[:,j]
+            axes[j,1].plot(t, dq_err, color=colors[f'joint{j+1}'], linewidth=2)
+            axes[j,1].set_ylabel(f'J{j+1} Vel Err (rad/s)')
+            axes[j,1].grid(True)
+            
+            # Add RMS error to title
+            rms_err = np.sqrt(np.mean(dq_err**2))
+            axes[j,1].set_title(f'Velocity Error (RMS: {rms_err:.3f} rad/s)')
+
+        # Add common x-label
+        for ax in axes[-1,:]:
+            ax.set_xlabel('Time (s)')
+        plt.tight_layout()
+        # plt.suptitle('Joint-wise Position and Velocity Errors', fontsize=16)
+        plt.show()
+
+
+    def plot_results(self, sim_data, save_path=None):
+        """
+        Plot tracking results including joint errors and velocities.
+        """
+        # Color definitions
+        colors = {
+            'joint1': '#1f77b4',    # bright blue
+            'joint2': '#ff7f0e',    # bright orange
+            'joint3': '#2ca02c',    # bright green
+            'joint4': '#d62728',    # bright red
+            'joint5': '#9467bd',    # purple
+            'joint6': '#8c564b',    # brown
+            'joint7': '#e377c2',    # pink
+            'actual': '#7f7f7f',    # gray
+            'desired': '#bcbd22',   # olive
+        }
+
+        # unpack
+        t        = sim_data['times']
+        q_pos   = sim_data['q_pos']
+        q_vel   = sim_data['q_vel']
+        ee_pos   = sim_data['ee_pos']
+        ee_vel   = sim_data['ee_vel']
+        tau      = sim_data['tau']
+        T_opt    = sim_data['times_opt']
+        ee_pos_o = sim_data['ee_pos_opt']
+        ee_vel_o = sim_data['ee_vel_opt']
+        U_opt    = sim_data['tau_opt']
+
+        dof = tau.shape[1]
+
+        # Create figure with 7 subplots
+        fig, axes = plt.subplots(5, 1, figsize=(12, 10), sharex=True)
+
+        # 1) End-effector position error norm
+        pos_interp = np.vstack([
+            np.interp(t, T_opt, ee_pos_o[:,i]) for i in range(3)
+        ]).T
+        err = np.linalg.norm(ee_pos - pos_interp, axis=1)
+        axes[0].plot(t, err, color=colors['actual'], label='EE pos error', linewidth=2)
+        axes[0].set_ylabel('Error (m)')
+        axes[0].legend()
+        axes[0].grid(True)
+
+        # 2) End-effector velocity magnitude
+        axes[1].plot(t, np.linalg.norm(ee_vel,axis=1), 
+                    color=colors['actual'], label='actual', linewidth=2)
+        axes[1].plot(T_opt, np.linalg.norm(ee_vel_o,axis=1),
+                    '--', color=colors['desired'], label='desired', linewidth=2)
+        axes[1].set_ylabel('EE Speed (m/s)')
+        axes[1].legend()
+        axes[1].grid(True)
+
+        # 3) Joint torques
+        for j in range(dof):
+            axes[2].plot(t, tau[:,j], color=colors[f'joint{j+1}'],
+                        label=f'τ{j+1}', linewidth=2)
+            axes[2].plot(T_opt, U_opt[j], '--', color=colors[f'joint{j+1}'],
+                        label=f'τ{j+1} des', linewidth=2)
+        axes[2].set_ylabel('Torque (Nm)')
+        axes[2].legend(ncol=4, fontsize='small')
+        axes[2].grid(True)
+
+        # 6) EE position components
+        for i, comp in enumerate(['x', 'y', 'z']):
+            axes[3].plot(t, ee_pos[:,i], color=colors[f'joint{i+1}'],
+                        label=f'p_{comp}', linewidth=2)
+            axes[3].plot(t, pos_interp[:,i], '--', color=colors[f'joint{i+1}'],
+                        label=f'p_{comp} des', linewidth=2)
+        axes[3].set_ylabel('EE Position (m)')
+        axes[3].legend(ncol=3)
+        axes[3].grid(True)
+
+        # 7) EE velocity components
+        for i, comp in enumerate(['x', 'y', 'z']):
+            axes[4].plot(t, ee_vel[:,i], color=colors[f'joint{i+1}'],
+                        label=f'v_{comp}', linewidth=2)
+            axes[4].plot(T_opt, ee_vel_o[:,i], '--', color=colors[f'joint{i+1}'],
+                        label=f'v_{comp} des', linewidth=2)
+        axes[4].set_ylabel('EE Velocity (m/s)')
+        axes[4].legend(ncol=3)
+        axes[4].grid(True)
+
+        axes[-1].set_xlabel('Time (s)')
+        plt.tight_layout()
+
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.show()
+
 
             
-class TimeKeeper:
-    def __init__(self, desired_freq=60):
-        self.period = 1.0 / desired_freq
-        self.last_time = time.perf_counter()
-        self.time_accumulator = 0
-        self.frame_count = 0
-        self.start_time = self.last_time
-
-    def should_step(self):
-        current_time = time.perf_counter()
-        frame_time = current_time - self.last_time
-        self.last_time = current_time
-        self.time_accumulator += frame_time
-        return self.time_accumulator >= self.period
-
-    def consume_step(self):
-        self.time_accumulator -= self.period
-        self.frame_count += 1
-
-    def get_fps(self):
-        elapsed = time.perf_counter() - self.start_time
-        return self.frame_count / elapsed if elapsed > 0 else 0
-
 if __name__ == "__main__":
+
+    T_opt = opt_trajectory_data['T_opt']
+    U_opt = opt_trajectory_data['U_opt']
+    Z_opt = opt_trajectory_data['Z_opt']
+
 
     simulation_time = 10.0 # seconds
     env_step_size = 0.001 # seconds
@@ -455,131 +1042,69 @@ if __name__ == "__main__":
 
     # Reset the environment
     env.reset()
-
     active_robot = env.robots[0]
 
-    # Get initial joint positions for both arms
-    # ways to retrieve joint positions
-    # right_arm_joints = env.sim.data.qpos[active_robot._ref_arm_joint_pos_indexes[:7]]  # First 7 joints for right arm
-    # left_arm_joints = env.sim.data.qpos[active_robot._ref_arm_joint_pos_indexes[7:]]   # Next 7 joints for left arm
+
+    ## generate an initialization trajectory
+    # example optimization
+    p_f = np.array([0.4, 0.0, 0.2])    # meters
+    v_f = np.array([0, 0, -0.05])   # m/s
+    v_p_mag = 1.5 # m/s
+    q_init = active_robot.init_qpos
+    target_pose = env.fk_fun(q_init).full()
+    target_pose[:3, 3] = p_f
+    q_sol = opt.inverse_kinematics_casadi(
+        target_pose,
+        env.fk_fun,
+        q_init).full().flatten()
     
-    desired_arm_positions = active_robot.init_qpos
-
-    desired_torso_height = env.init_torso_height
-
-
-    # Get model and data
-    model = env.sim.model._model
-    data = env.sim.data._data
-    
-    # Set smaller timestep for more accurate physics simulation
-    model.opt.timestep = env_step_size  # commented out to use the default timestep
-
-
-    # Lists to store time, force and position data
-    times = []
-    forces = []
-    z_positions = []
-    contact_object = 'bounceball_g0'
-
-    # ball_body_id = env.sim.model.body_name2id('bounceball_main')
-
-    ### compute inverse kinematics for desired impact location 
-    # example impact location
-    p_f = np.array([0.4, 0.0, 0.1])    # meters
-    v_f = np.array([0, 0, -0.5])   # m/s
-
-    q_init = env.robots[0].init_qpos
-
-    H_base_ee_f = opt.forward_kinematics_homogeneous(q_init, env.fk_fun).full()
-    H_base_ee_f[0:3, 3] = p_f
-    q_f = opt.inverse_kinematics_casadi(H_base_ee_f, env.fk_fun, q_init).full().flatten()
+    # back propagated trajectory data
+    traj  = opt.back_propagate_traj_using_manip_ellipsoid(
+        v_f, q_sol, env.fk_fun, env.jac_fun, N=100, dt=0.01, v_p_mag=v_p_mag
+    )
 
     
-    with mujoco.viewer.launch_passive(model, data) as viewer:
-        # Set initial camera parameters
-        # viewer.opt.frame = mujoco.mjtFrame.mjFRAME_SITE  # visulizing site
-        viewer.cam.distance = 3.0
-        viewer.cam.azimuth = 120
-        viewer.cam.elevation = -45
-        viewer.cam.lookat[:] = np.array([0.0, -0.25, 0.824])
-        viewer.opt.geomgroup = np.array([0,1,1,0,0,0]) # disabled the geom1 collision body visual
 
-        time_keeper = TimeKeeper(desired_freq=1/model.opt.timestep)
+    ## or using the max inertial direction
+    # traj = opt.back_propagate_traj_using_max_inertial_direction(
+    #     v_f, q_sol, opt.build_trace_grad_fun(env.M_fun), env.jac_fun,
+    #     N=80, dt=0.02
+    # )
 
-        while viewer.is_running() and not env.done and data.time < simulation_time:
-            if time_keeper.should_step():
-                # Simulation step
-                
-                # Record data and update viewer
-                
-                # data.ctrl[:] = 0  # Disable controller
-                
-                torque = env.pid_joint_jog(q_f)
-                env_action = np.clip(torque, -env.pin_model.effortLimit, env.pin_model.effortLimit)
+    # add ff torques to the trajectory
+    Z_init = traj['Z']
+    T_init = traj['T']
+    U_init = traj['U']
 
-                ####Controlling the ball ######
-                # obtaining free_joint_pose
-                # free_joint_pose = env.sim.data.get_joint_qpos("bounceball_free_joint")
-                # Apply a force to the ball
-                
-                # Step the simulation
-                env.sim.data.ctrl[:] = env_action
-                env.sim.step()
-                # mujoco.mj_step(model, data)
-                # env.step(env_action)
+    env.linearization_cache = opt.linearize_dynamics_along_trajectory(
+        T_init, U_init, Z_init, env.M_fun, env.C_fun, env.G_fun
+    )
 
-                # total_force = 0
-                # # Iterate over all detected contacts
-                # for i in range(data.ncon):
-                #     contact = data.contact[i]
-                #     # Check if contact involves the table and the object of interest
-                #     if ((contact.geom1 == env.sim.model.geom_name2id('table_collision') and 
-                #         contact.geom2 == env.sim.model.geom_name2id(contact_object)) or
-                #         (contact.geom2 == env.sim.model.geom_name2id('table_collision') and 
-                #         contact.geom1 == env.sim.model.geom_name2id(contact_object))):
-                        
-                #         # Compute contact force (6D: 3D force + 3D torque)
-                #         force_vector = np.zeros(6)
-                #         mujoco.mj_contactForce(model, data, i, force_vector)
-                        
-                #         # Extract normal force (first component in the contact frame)
-                #         normal_force = force_vector[0]
-                #         total_force += normal_force
-                
-                # # Record positions, times, and forces
-                # ball_body_id = env.sim.model.body_name2id('bounceball_main')
-                # z_positions.append(data.xpos[ball_body_id][2])
-                # times.append(data.time)
-                # forces.append(total_force)  # This now includes the spike
-                
-                # Viewer updates (unchanged)
-                with viewer.lock():
-                    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
 
-                viewer.sync()
-                time_keeper.consume_step()
-                
-                # # Optional: Monitor performance
-                # if time_keeper.frame_count % 60 == 0:
-                #     print(f"Current FPS: {time_keeper.get_fps():.2f}")
+    sim_data = env.run_simulation_offscreen(
+                T_init,
+                U_init,
+                Z_init,
+                slow_factor=1.0
+    )
 
-    # Create subplots for force and position
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
+
+    # sim_data = env.run_simulation_offscreen(
+    #             T_opt,
+    #             U_opt,
+    #             Z_opt,
+    #             slow_factor=1.0)
     
-    # Plot forces
-    ax1.plot(times, forces)
-    ax1.set_xlabel('Time (s)')
-    ax1.set_ylabel('Impact Force (N)')
-    ax1.set_title('Ball-Table Impact Force over Time')
-    ax1.grid(True)
+    # sim_data = env.run_pid_jogging_simulation(
+    #             q_desired=Z_opt[:active_robot.dof,-1],
+    #             Kp=80,
+    #             Kd=30,
+    #             tol=0.001,
+    #             sim_dt=1e-3,
+    #             record_dt=1e-3,
+    #             max_time=5.0,
+    #             slow_factor=1.0)
     
-    # Plot z position
-    ax2.plot(times, z_positions)
-    ax2.set_xlabel('Time (s)')
-    ax2.set_ylabel('Z Position (m)')
-    ax2.set_title('Ball Z Position over Time')
-    ax2.grid(True)
-    
-    plt.tight_layout()
-    plt.show()
+    # Plot results
+    env.plot_joints(sim_data)
+    env.plot_results(sim_data, plot_save_path)
