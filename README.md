@@ -3,6 +3,12 @@
 ![gallery of_environments](docs/images/gallery.png)
 
 Added Dual Kinova Gen3 Robot into the Robot Collection.
+
+To enable interfacing with kinova kortex api:
+```
+uv pip install --no-deps -r requirements-kortexapi.txt
+```
+
 <p float="left">
   <img src="docs/images/dual_kinova3.png" width="400">
 </p>
