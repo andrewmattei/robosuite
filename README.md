@@ -4,6 +4,16 @@
 
 Added Dual Kinova Gen3 Robot into the Robot Collection.
 
+Note that with the additional dependencies, first navigate to the same path as `requirements.txt`:
+```
+uv venv --python 3.10.12
+source .venv/bin/activate
+uv pip install -r requirements.txt -r requirements-extra.txt
+uv pip uninstall robosuite
+uv pip install -e .
+```
+to make import user created module possible.
+
 To enable interfacing with kinova kortex api:
 ```
 uv pip install --no-deps -r requirements-kortexapi.txt
