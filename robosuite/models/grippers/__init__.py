@@ -12,6 +12,7 @@ from .robotiq_140_gripper import Robotiq140Gripper
 from .wiping_gripper import WipingGripper
 from .bd_gripper import BDGripper
 from .null_gripper import NullGripper
+from .impact_body import ImpactBody
 from .inspire_hands import InspireLeftHand, InspireRightHand
 from .fourier_hands import FourierLeftHand, FourierRightHand
 
@@ -30,6 +31,7 @@ GRIPPER_MAPPING = {
     "InspireRightHand": InspireRightHand,
     "FourierLeftHand": FourierLeftHand,
     "FourierRightHand": FourierRightHand,
+    "ImpactBody": ImpactBody,
     None: NullGripper,
 }
 

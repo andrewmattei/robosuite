@@ -145,7 +145,8 @@ def end_effector_position(q, pos_fun):
 def inverse_kinematics_casadi(
     target_pose, fk_fun,
     q_init=None, lb=None, ub=None,
-    tol=1e-9, max_iter=500
+    tol=1e-9, max_iter=5000,
+    w_pose = 10.0, w_config=0.01
 ):
     """
     Solve IK for `fk_fun(q) ≈ target_pose` with high precision and no IPOPT banner.\n
@@ -162,9 +163,26 @@ def inverse_kinematics_casadi(
     nq = fk_fun.size1_in(0)
     q  = cs.SX.sym('q', nq)
 
-    # objective: Frobenius‐norm of pose error
-    T_err = fk_fun(q) - target_pose
-    obj   = cs.norm_2(cs.reshape(T_err, -1, 1))
+    # objective: decomposed pose and orientation error
+    T_curr = fk_fun(q)
+    p_curr, R_curr = T_curr[:3,3], T_curr[:3,:3]
+    p_des, R_des = target_pose[:3,3], target_pose[:3,:3]
+    pos_error   = cs.sumsqr(p_curr-p_des)
+    ER = cs.mtimes(R_des, R_curr.T)
+    # trace_ER = ER[0,0] + ER[1,1] + ER[2,2]
+    # cos_phi = (trace_ER - 1.0) / 2.0
+    # cos_phi_clamped = cs.fmin(cs.fmax(cos_phi, -1.0), 1.0)
+    # phi = cs.acos(cos_phi_clamped)
+    # pose_error = pos_error + phi**2
+    R_err = ER - cs.SX_eye(3)
+    r_err_flat = cs.sumsqr(cs.reshape(R_err, -1, 1))
+    pose_error = pos_error + r_err_flat*100
+    
+    obj = w_pose * pose_error
+    if q_init is not None:
+        # reduce the difference on the last link to make it very similar to q_init
+        config_error = cs.sumsqr(q-q_init)
+        obj += w_config * config_error
 
     nlp = {'x': q, 'f': obj}
     opts = {
@@ -184,6 +202,157 @@ def inverse_kinematics_casadi(
 
     sol = solver(**args)
     return sol['x']
+
+
+def inverse_kinematics_casadi_elbow_above(
+    target_pose, fk_fun,
+    q_init=None, lb=None, ub=None,
+    tol=1e-9, max_iter=500,
+    elbow_pos_fun = None,  # Name of elbow link in URDF
+    min_height=0.0  # Minimum height above table
+):
+    """
+    Solve IK with elbow height constraint.
+    Args:
+        ...existing args...
+        elbow_link_name: Name of the elbow link to constrain
+        min_height: Minimum allowed height above table (z=0)
+    """
+    nq = fk_fun.size1_in(0)
+    q = cs.SX.sym('q', nq)
+
+    # Get position of elbow link using forward kinematics
+    # This requires creating a new FK function for the elbow link
+
+    # Objective: Frobenius-norm of pose error
+    T_err = fk_fun(q) - target_pose
+    obj = cs.norm_2(cs.reshape(T_err, -1, 1))
+
+    # Create NLP with elbow height constraint
+    nlp = {
+        'x': q,
+        'f': obj,
+        'g': elbow_pos_fun(q)[2]  # z-coordinate of elbow
+    }
+    
+    # Add elbow height constraint
+    opts = {
+        'ipopt.print_level': 0,
+        'print_time': False,
+        'ipopt.tol': tol,
+        'ipopt.max_iter': max_iter,
+    }
+    
+    solver = cs.nlpsol('ik', 'ipopt', nlp, opts)
+
+    # Set up bounds including elbow height constraint
+    x0 = q_init if q_init is not None else np.zeros(nq)
+    args = {
+        'x0': x0,
+        'lbg': min_height,  # Minimum z-height
+        'ubg': cs.inf       # No upper bound
+    }
+    
+    if lb is not None and ub is not None:
+        args.update(lbx=lb, ubx=ub)
+
+    sol = solver(**args)
+    return sol['x']
+
+
+def inverse_kinematics_pin(
+    model,              # pinocchio.Model  (NumPy version)
+    data,               # pinocchio.Data
+    frame_id,           # integer frame ID of the end-effector
+    q_init,             # (7,) NumPy array in standard rep (angles)
+    target_pose,        # pin.SE3  (desired EE pose)  OR   4×4 NumPy array
+    fk_fun,             # CasADi Function: q_std (7×1) → 4×4 EE homogeneous
+    jac_fun,            # CasADi Function: q_std (7×1) → 6×7 spatial Jacobian (world‐frame)
+    tol=1e-9,
+    max_iter=100,
+):
+    """
+    A fast iterative IK that uses:
+      • `fk_fun(q_std)`    → 4×4 SX/DM “current EE pose”
+      • `jac_fun(q_std)`   → 6×7 SX/DM spatial Jacobian (world‐aligned)
+      • Pinocchio’s `integrate` and `log` (NumPy) for Δq on the manifold.
+
+    Args:
+      model, data   :  Pinocchio model/data (NumPy version)
+      frame_id      :  index of ee frame
+      q_init        :  (7,) NumPy “standard” joint angles
+      target_pose   :  pin.SE3  or 4×4 NumPy (desired EE pose)
+      fk_fun        :  CasADi Function: q_std → 4×4 homogeneous (SX/DM)
+      jac_fun       :  CasADi Function: q_std → 6×7 Jacobian (SX/DM)
+      tol           :  convergence tol on ‖err6‖
+      max_iter      :  max Newton steps
+      damp          :  damping weight for pseudo‐inverse
+
+    Returns:
+      (q_sol, success_flag)
+        • q_sol is a (7,) NumPy array (standard rep)
+        • success_flag is True if ‖err6‖ < tol within max_iter
+    """
+
+    R_des = target_pose[0:3, 0:3]
+    p_des = target_pose[0:3, 3]
+    oMf_des = pin.SE3(R_des, p_des)
+
+    # 2) Initialize q (standard 7×1) and success flag
+    q = q_init.copy()
+    success = False
+
+    for i in range(max_iter):
+        # 3) Evaluate FK via CasADi: returns a 4×4 DM or SX; convert to NumPy
+        Tcur_cas = fk_fun(q)   # returns a 4×4 DM if q is numpy; or SX if q is SX
+        # We want numeric, so force .full() if it’s DM:
+        if isinstance(Tcur_cas, cs.DM):
+            Tcur_num = np.array(Tcur_cas.full())
+        else:
+            # If somehow we get SX (rare, since q is numeric), explicitly evaluate:
+            Tcur_num = np.array(cs.Function('tmp', [], [Tcur_cas])().full())
+
+        Rcur = Tcur_num[0:3, 0:3]
+        tcur = Tcur_num[0:3, 3]
+        oMf_cur = pin.SE3(Rcur, tcur)
+
+        # 4) Compute SE(3) error: dM = oMf_des * oMf_cur⁻¹
+        dM = oMf_des.actInv(oMf_cur)         # pin.SE3
+        err6 = pin.log(dM).vector            # 6×1 NumPy
+
+        # 5) Check convergence
+        err_norm = np.linalg.norm(err6)
+        if err_norm < tol:
+            success = True
+            break
+
+        # 6) Evaluate spatial Jacobian (6×7) via CasADi, convert to NumPy
+        Jcas = jac_fun(q)
+        if isinstance(Jcas, cs.DM):
+            J6 = np.array(Jcas.full())
+        else:
+            J6 = np.array(cs.Function('tmpJ', [], [Jcas])().full())
+
+        # 7) Damped least‐squares:  solve  (J6 J6ᵀ + damp·I) x = err6
+        JJt = J6.dot(J6.T) + damp * np.eye(6)
+        sol = np.linalg.solve(JJt, err6)    # (6,)
+        dq  = -J6.T.dot(sol)                # (7,)
+
+        # 8) Integrate dq on the manifold with Pinocchio
+        #    a) Convert current q (standard) → Pinocchio rep
+        q_pin = standard_to_pinocchio(model, q)  # (nq,) NumPy = (13,) if there’s free-flyer; but on Kinova it’s (7 joint dims but pinocchio uses 7+? 
+                                                # Actually, for Kinova “buildModelFromUrdf” yields an 7‐joint chain with no root free‐flyer, so nq=nq_pin=7.)
+        #    b) Integrate
+        q_pin_next = pin.integrate(model, q_pin, dq)
+        #    c) Convert back to “standard” angles
+        q = pinocchio_to_standard(model, q_pin_next)
+
+        # 9) (Optional) Print every 10 iters
+        if i % 10 == 0:
+            print(f"[fast IK] iter {i:3d}  |  ‖err6‖ = {err_norm:.3e}")
+
+    return q, success
+
 
 def compute_jacobian(q, jac_fun):
     return jac_fun(q)
@@ -572,13 +741,13 @@ def back_propagate_traj_using_manip_ellipsoid(
         J_vel  = J6[0:3, :]
 
         # 2) principal translation direction via SVD
-        Uvel, _, _ = np.linalg.svd(J_vel, full_matrices=False)
+        Uvel, _, _ = np.linalg.svd(J_vel)
         u1         = Uvel[:, 0]
 
         # 3) enforce sign consistency
-        # if np.dot(u1, u1_prev) < 0:
-        #     u1 = -u1
-        # u1_prev = u1
+        if np.dot(u1, u1_prev) < 0:
+            u1 = -u1
+        u1_prev = u1
 
         # 4) build manipulability-only twist
         twist_mm = np.concatenate([u1, np.zeros(3)])
@@ -618,6 +787,8 @@ def back_propagate_traj_using_manip_ellipsoid(
         # update for next iter
         q_curr          = q_prev
         # twist_prev_unit = twist_unit
+        # if i > 70:
+        #     print(f"[backprop] step {i:3d}  |  ")
 
     # reverse so traj[0] is “start” and traj[-1] is (q_f, qd_f)
     traj.reverse()
@@ -937,6 +1108,7 @@ if __name__ == "__main__":
 
     # # Example IK
     q_init = np.array([0.000, 0.650, 0.000, 1.890, 0.000, 0.600, -np.pi / 2])
+    q_init_2 = np.radians([0, 15, 180, 230, 0, -35, 90])
     target_pose = fk_fun(q_init).full()
     target_pose[0:3, 3] = p_f
     q_sol = inverse_kinematics_casadi(target_pose, fk_fun, q_init).full().flatten()

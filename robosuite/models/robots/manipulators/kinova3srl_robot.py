@@ -33,7 +33,7 @@ class Kinova3SRL(ManipulatorModel):
 
     @property
     def init_qpos(self):
-        return np.array([0.000, 0.650, 0.000, 1.890, 0.000, 0.600, -np.pi / 2])
+        return np.radians([0, 15, 180, -130, 0, -35, 90])
 
     @property
     def base_xpos_offset(self):

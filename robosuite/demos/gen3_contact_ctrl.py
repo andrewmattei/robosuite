@@ -48,12 +48,13 @@ class Kinova3ContactControl(ManipulationEnv):
         robots,
         env_configuration="default",
         controller_configs=None,
-        gripper_types=None,
+        # gripper_types=None,
+        gripper_types="ImpactBody",
         initialization_noise="default",
         table_full_size=(0.8, 0.8, 0.05),
         table_friction=(1.0, 5e-3, 1e-4),
-        use_camera_obs=True,
-        use_object_obs=True,
+        use_camera_obs=False,
+        use_object_obs=False,
         reward_scale=1.0,
         reward_shaping=False,
         placement_initializer=None,
@@ -77,7 +78,7 @@ class Kinova3ContactControl(ManipulationEnv):
         # settings for table top
         self.table_full_size = table_full_size
         self.table_friction = table_friction
-        self.table_offset = np.array((0, 0, 0.7))  # made changes
+        self.table_offset = np.array((0, 0, 0.912))  # made changes
 
         # Omron LD-60 Mobile Base setting
         self.init_torso_height = 0.342
@@ -104,6 +105,14 @@ class Kinova3ContactControl(ManipulationEnv):
         self.G_fun = None
         self.pin_model, self.pin_data = opt.load_kinova_model()
         self.fk_fun, self.pos_fun, self.jac_fun, self.M_fun, self.C_fun, self.G_fun = opt.build_casadi_kinematics_dynamics(self.pin_model)
+
+        rev_lim = np.pi * 2
+        self.q_lower   =  np.array([-rev_lim, -2.41, -rev_lim, -2.66, -rev_lim, -2.23, -rev_lim])
+        self.q_upper   =  np.array([ rev_lim,  2.41,  rev_lim,  2.66,  rev_lim,  2.23,  rev_lim])
+        self.dq_lower  =  -self.pin_model.velocityLimit
+        self.dq_upper  =  self.pin_model.velocityLimit
+        self.tau_lower =  -self.pin_model.effortLimit
+        self.tau_upper =  self.pin_model.effortLimit
 
         self.init_jogging = True
         self.viewer = None
@@ -220,27 +229,27 @@ class Kinova3ContactControl(ManipulationEnv):
         )
 
         # Create placement initializer
-        if self.placement_initializer is not None:
-            self.placement_initializer.reset()
-            self.placement_initializer.add_objects(self.cube)
-        else:
-            self.placement_initializer = UniformRandomSampler(
-                name="ObjectSampler",
-                mujoco_objects=self.cube,
-                x_range=[-0.03, 0.03],
-                y_range=[-0.03, 0.03],
-                rotation=None,
-                ensure_object_boundary_in_range=False,
-                ensure_valid_placement=True,
-                reference_pos=self.table_offset,
-                z_offset=0.01,
-            )
+        # if self.placement_initializer is not None:
+        #     self.placement_initializer.reset()
+        #     self.placement_initializer.add_objects(self.cube)
+        # else:
+        #     self.placement_initializer = UniformRandomSampler(
+        #         name="ObjectSampler",
+        #         mujoco_objects=self.cube,
+        #         x_range=[-0.03, 0.03],
+        #         y_range=[-0.03, 0.03],
+        #         rotation=None,
+        #         ensure_object_boundary_in_range=False,
+        #         ensure_valid_placement=True,
+        #         reference_pos=self.table_offset,
+        #         z_offset=0.01,
+        #     )
 
         # task includes arena, robot, and objects of interest
         self.model = ManipulationTask(
             mujoco_arena=mujoco_arena,
             mujoco_robots=[robot.robot_model for robot in self.robots],
-            mujoco_objects=self.cube,
+            # mujoco_objects=self.cube,
         )
 
         print("Model loaded")
@@ -253,7 +262,7 @@ class Kinova3ContactControl(ManipulationEnv):
         super()._setup_references()
 
          # Additional object references from this env
-        self.cube_body_id = self.sim.model.body_name2id(self.cube.root_body)
+        # self.cube_body_id = self.sim.model.body_name2id(self.cube.root_body)
 
     def _setup_observables(self):
         """
@@ -320,22 +329,22 @@ class Kinova3ContactControl(ManipulationEnv):
         #     self.sim.data.qpos[gripper_idx] = init_gripper_pos
 
         # Reset all object positions using initializer sampler if we're not directly loading from an xml
-        if not self.deterministic_reset:
-            # Sample from the placement initializer for all objects
-            object_placements = self.placement_initializer.sample()
+        # if not self.deterministic_reset:
+        #     # Sample from the placement initializer for all objects
+        #     object_placements = self.placement_initializer.sample()
 
-            # Loop through all objects and reset their positions
-            for obj_pos, obj_quat, obj in object_placements.values():
-                self.sim.data.set_joint_qpos(obj.joints[0], np.concatenate([np.array(obj_pos), np.array(obj_quat)]))
-        else:
-            # Deterministic reset -- set all objects to their specified positions
-            object_placements = self.placement_initializer.sample()
+        #     # Loop through all objects and reset their positions
+        #     for obj_pos, obj_quat, obj in object_placements.values():
+        #         self.sim.data.set_joint_qpos(obj.joints[0], np.concatenate([np.array(obj_pos), np.array(obj_quat)]))
+        # else:
+        #     # Deterministic reset -- set all objects to their specified positions
+        #     object_placements = self.placement_initializer.sample()
 
-            # Loop through all objects and reset their positions
-            for obj_pos, obj_quat, obj in object_placements.values():
-                obj_pos = np.array([0,0,obj_pos[2]]) # remove the randomness in x,y of the ball
-                obj_quat = np.array([1,0,0,0]) # remove the randomness in the orientation of the ball
-                self.sim.data.set_joint_qpos(obj.joints[0], np.concatenate([np.array(obj_pos), np.array(obj_quat)]))
+        #     # Loop through all objects and reset their positions
+        #     for obj_pos, obj_quat, obj in object_placements.values():
+        #         obj_pos = np.array([0,0,obj_pos[2]]) # remove the randomness in x,y of the ball
+        #         obj_quat = np.array([1,0,0,0]) # remove the randomness in the orientation of the ball
+        #         self.sim.data.set_joint_qpos(obj.joints[0], np.concatenate([np.array(obj_pos), np.array(obj_quat)]))
 
     def _compute_mass_matrix(self):
         """Compute mass matrix using mj_fullM."""
@@ -543,7 +552,10 @@ class Kinova3ContactControl(ManipulationEnv):
         state_dim   = Z_opt.shape[0]    # e.g. 14 for Gen3 (7 q + 7 dq)
         control_dim = U_opt.shape[0]    # e.g. 7 joints
         Q = np.eye(state_dim)
+        Q[:control_dim,:control_dim] *= 1e4
+        
         R = np.eye(control_dim) * 1e-5
+        
 
         # 4) Backward Riccati recursion over a short finite horizon
         P = Q.copy()
@@ -576,6 +588,33 @@ class Kinova3ContactControl(ManipulationEnv):
             tau = self.inverse_dynamics(np.zeros_like(dq_curr))
 
         return tau
+    
+
+    def post_contact_joint_ctrl(self, q_end, Kp=100, Kd=10):
+        """
+        Compute control torques for post-impact joint position control.
+        
+        Args:
+            q_end: Target joint position [q1, q2, q3]
+        Returns:
+            tau: Control torques
+        """
+        data  = self.sim.data._data
+        robot = self.robots[0]
+        arm_indices = robot._ref_joint_pos_indexes
+
+        q_curr = data.qpos[arm_indices]
+        dq_curr = data.qvel[arm_indices]
+        # Compute position error
+        q_err = q_end - q_curr
+        
+        # PD control in joint space
+        ddq_des = (Kp * q_err - 
+                  Kd * dq_curr)
+        
+        # Compute required torques using inverse dynamics
+        return self.inverse_dynamics(ddq_des)
+        
     
 
     def run_pid_jogging_simulation(self, q_desired, 
@@ -713,6 +752,9 @@ class Kinova3ContactControl(ManipulationEnv):
 
         # prepare storage
         times, q_pos, q_vel, ee_pos, ee_vel, tau_log, contact_forces = [], [], [], [], [], [], []
+        impact_time = None
+        impact_pos = None
+        impact_vel = None
 
         # precompute desired EE states
         num = len(T_opt)
@@ -731,39 +773,77 @@ class Kinova3ContactControl(ManipulationEnv):
         data.qvel[arm_indices] = Z_opt[robot.dof:, 0]
         data.time    = 0.0
 
+        # set phase: goes "tracking" -> "post_impact"
+        phase = "tracking"
+        # impact flag to enable recording at impact just once
+        impact_flag = False
+        # choose 0.80/1 point of the trajectory to be the q_end for post impact
+        q_end = Z_opt[:robot.dof, int(len(T_opt) *0.80)]
+
 
         # run until just past final time
-        while data.time < T_opt[-1] * 1.05:
+        while data.time < T_opt[-1] * 1.5:
             mujoco.mj_forward(model, data)
+
+            total_force = 0.0
+            for i in range(data.ncon):
+                force = np.zeros(6)
+                mujoco.mj_contactForce(model, data, i, force)
+                total_force += np.linalg.norm(force[:3])
 
             # only record every record_steps
             if step_count % record_steps == 0:
-                # control
-                if self.linearization_cache is not None:
-                    tau = self.lqr_tracking_controller(
-                        data.time, T_opt, U_opt, Z_opt)
-                else:
-                    tau = self.optimal_trajectory_tracking_ctrl(
-                        data.time, T_opt, U_opt, Z_opt)
                 
+                # reading at recording freq
+                q_curr = data.qpos[arm_indices]
+                dq_curr = data.qvel[arm_indices]
+
+                # control
+                if phase == "tracking":
+                    if self.linearization_cache is not None:
+                        tau = self.lqr_tracking_controller(
+                            data.time, T_opt, U_opt, Z_opt)
+                    else:
+                        tau = self.optimal_trajectory_tracking_ctrl(
+                            data.time, T_opt, U_opt, Z_opt)
+                    if data.ncon > 0 and not impact_flag:
+                        impact_flag = True
+                        impact_time = times[-1]
+                        impact_pos = ee_pos[-1]
+                        impact_vel = ee_vel[-1]
+                        if self.gui_on:
+                            print(f"Impact detected at time {impact_time:.3f}s, position: {impact_pos}, velocity: {impact_vel}")
+                        phase = "post_impact"
+
+                elif phase == "post_impact":
+                    tau = self.post_contact_joint_ctrl(q_end)
+                    error = np.linalg.norm(data.qpos - q_end)
+                    if error < 0.04:
+                        print(f"End-effector reached target position at time {data.time:.3f}s")
+                        break
+               
                 # bound torques
-                tau = np.clip(tau, robot.torque_limits[0], robot.torque_limits[1])
+                tau = np.clip(tau, self.tau_lower, self.tau_upper)
 
-                # joint log
-                q_pos.append(data.qpos[arm_indices].copy())
-                q_vel.append(data.qvel[arm_indices].copy())
+                if impact_time is None or data.time < impact_time + 0.02:
+                    # joint log
+                    q_pos.append(q_curr.copy())
+                    q_vel.append(dq_curr.copy())
 
-                # end-effector position
-                H_base_ee = self._ee_pose_in_base(robot)
-                ee_pos.append(H_base_ee[:3, 3].copy())
+                    # end-effector position
+                    H_base_ee = self._ee_pose_in_base(robot)
+                    ee_pos.append(H_base_ee[:3, 3].copy())
 
-                # end-effector velocity via Jacobian
-                ee_v, ee_w = self._ee_twist_in_base(robot)
-                ee_vel.append(ee_v.copy())
+                    # end-effector velocity via Jacobian
+                    ee_v, ee_w = self._ee_twist_in_base(robot)
+                    ee_vel.append(ee_v.copy())
 
-                # torques and summed contact force magnitude
-                tau_log.append(tau.copy())
-                times.append(data.time)
+                    # torques and summed contact force magnitude
+                    tau_log.append(tau.copy())
+                    contact_forces.append(total_force)
+                    times.append(data.time)
+                elif not self.gui_on:
+                    break
                 
                 data.ctrl[:] = tau
 
@@ -790,9 +870,12 @@ class Kinova3ContactControl(ManipulationEnv):
             'contact_forces':  np.array(contact_forces),
             'times_opt':       T_opt,
             'tau_opt':         U_opt,
-            'Z_opt':          Z_opt,
+            'Z_opt':           Z_opt,
             'ee_pos_opt':      ee_pos_opt,
             'ee_vel_opt':      ee_vel_opt,
+            'impact_time':     impact_time,
+            'impact_pos':      impact_pos,
+            'impact_vel':      impact_vel
         }
     
 
@@ -938,7 +1021,9 @@ class Kinova3ContactControl(ManipulationEnv):
             'joint6': '#8c564b',    # brown
             'joint7': '#e377c2',    # pink
             'actual': '#7f7f7f',    # gray
-            'desired': '#bcbd22',   # olive
+            'desired':'#bcbd22',    # olive
+            'impact': '#9467bd',      # purple
+            'target': '#8c564b',      # brown
         }
 
         # unpack
@@ -952,11 +1037,15 @@ class Kinova3ContactControl(ManipulationEnv):
         ee_pos_o = sim_data['ee_pos_opt']
         ee_vel_o = sim_data['ee_vel_opt']
         U_opt    = sim_data['tau_opt']
+        contact_forces = sim_data['contact_forces']
+        impact_time = sim_data['impact_time']
+        impact_vel = sim_data['impact_vel']
+
 
         dof = tau.shape[1]
 
         # Create figure with 7 subplots
-        fig, axes = plt.subplots(5, 1, figsize=(12, 10), sharex=True)
+        fig, axes = plt.subplots(4, 1, figsize=(10, 8), sharex=True)
 
         # 1) End-effector position error norm
         pos_interp = np.vstack([
@@ -966,16 +1055,27 @@ class Kinova3ContactControl(ManipulationEnv):
         axes[0].plot(t, err, color=colors['actual'], label='EE pos error', linewidth=2)
         axes[0].set_ylabel('Error (m)')
         axes[0].legend()
-        axes[0].grid(True)
+        axes[0].grid(True, alpha=0.3)
 
         # 2) End-effector velocity magnitude
         axes[1].plot(t, np.linalg.norm(ee_vel,axis=1), 
                     color=colors['actual'], label='actual', linewidth=2)
         axes[1].plot(T_opt, np.linalg.norm(ee_vel_o,axis=1),
                     '--', color=colors['desired'], label='desired', linewidth=2)
+        # Add desired impact velocity line
+        imp_vel_des = np.linalg.norm(ee_vel_o[-1])
+        axes[1].axhline(y=imp_vel_des, color=colors['target'], linestyle='--', 
+                    label=f'imp_vel_des={imp_vel_des:.2f}')
+        if impact_time is not None:
+            axes[1].axvline(x=T_opt[-1], color=colors['target'], 
+                        linestyle='--', label='Desired Impact Time')
+            axes[1].annotate(f"Impact vel: {np.linalg.norm(impact_vel):.4f} m/s", 
+                        xy=(impact_time, np.linalg.norm(impact_vel)),
+                        xytext=(impact_time, np.linalg.norm(impact_vel)+0.5),
+                        arrowprops=dict(facecolor=colors['impact'], shrink=0.05))
         axes[1].set_ylabel('EE Speed (m/s)')
         axes[1].legend()
-        axes[1].grid(True)
+        axes[1].grid(True, alpha=0.3)
 
         # 3) Joint torques
         for j in range(dof):
@@ -985,27 +1085,42 @@ class Kinova3ContactControl(ManipulationEnv):
                         label=f'τ{j+1} des', linewidth=2)
         axes[2].set_ylabel('Torque (Nm)')
         axes[2].legend(ncol=4, fontsize='small')
-        axes[2].grid(True)
+        axes[2].grid(True, alpha=0.3)
 
-        # 6) EE position components
-        for i, comp in enumerate(['x', 'y', 'z']):
-            axes[3].plot(t, ee_pos[:,i], color=colors[f'joint{i+1}'],
-                        label=f'p_{comp}', linewidth=2)
-            axes[3].plot(t, pos_interp[:,i], '--', color=colors[f'joint{i+1}'],
-                        label=f'p_{comp} des', linewidth=2)
-        axes[3].set_ylabel('EE Position (m)')
-        axes[3].legend(ncol=3)
-        axes[3].grid(True)
+        # 4) contact forces
+        axes[3].plot(t, contact_forces, color='red', label='Contact Force', linewidth=2)
+        axes[3].set_ylabel('Force (N)')
+        axes[3].grid(True, alpha=0.3)
+        if impact_time is not None:
+            axes[3].axvline(x=impact_time, color=colors['impact'], 
+                        linestyle='--', label='Impact')
+            peak_force = max(contact_forces)
+            peak_time = t[np.argmax(contact_forces)]
+            axes[3].annotate(f"Peak: {peak_force:.2f}N", 
+                            xy=(peak_time, peak_force), 
+                            xytext=(peak_time, peak_force+0.05),
+                            arrowprops=dict(facecolor='black', shrink=0.05))
+        axes[3].legend(frameon=True)
 
-        # 7) EE velocity components
-        for i, comp in enumerate(['x', 'y', 'z']):
-            axes[4].plot(t, ee_vel[:,i], color=colors[f'joint{i+1}'],
-                        label=f'v_{comp}', linewidth=2)
-            axes[4].plot(T_opt, ee_vel_o[:,i], '--', color=colors[f'joint{i+1}'],
-                        label=f'v_{comp} des', linewidth=2)
-        axes[4].set_ylabel('EE Velocity (m/s)')
-        axes[4].legend(ncol=3)
-        axes[4].grid(True)
+        # # 6) EE position components
+        # for i, comp in enumerate(['x', 'y', 'z']):
+        #     axes[3].plot(t, ee_pos[:,i], color=colors[f'joint{i+1}'],
+        #                 label=f'p_{comp}', linewidth=2)
+        #     axes[3].plot(t, pos_interp[:,i], '--', color=colors[f'joint{i+1}'],
+        #                 label=f'p_{comp} des', linewidth=2)
+        # axes[3].set_ylabel('EE Position (m)')
+        # axes[3].legend(ncol=3)
+        # axes[3].grid(True)
+
+        # # 7) EE velocity components
+        # for i, comp in enumerate(['x', 'y', 'z']):
+        #     axes[4].plot(t, ee_vel[:,i], color=colors[f'joint{i+1}'],
+        #                 label=f'v_{comp}', linewidth=2)
+        #     axes[4].plot(T_opt, ee_vel_o[:,i], '--', color=colors[f'joint{i+1}'],
+        #                 label=f'v_{comp} des', linewidth=2)
+        # axes[4].set_ylabel('EE Velocity (m/s)')
+        # axes[4].legend(ncol=3)
+        # axes[4].grid(True)
 
         axes[-1].set_xlabel('Time (s)')
         plt.tight_layout()
@@ -1042,21 +1157,40 @@ if __name__ == "__main__":
 
     # Reset the environment
     env.reset()
+    # env.gui_on = False
     active_robot = env.robots[0]
 
 
     ## generate an initialization trajectory
     # example optimization
-    p_f = np.array([0.4, 0.0, 0.2])    # meters
+    p_ee_to_ball_buttom = 0.05 + 0.025
+    p_f = np.array([0.5, 0.0, p_ee_to_ball_buttom])    # meters
     v_f = np.array([0, 0, -0.05])   # m/s
-    v_p_mag = 1.5 # m/s
+    v_p_mag = 1.0 # m/s
     q_init = active_robot.init_qpos
     target_pose = env.fk_fun(q_init).full()
     target_pose[:3, 3] = p_f
     q_sol = opt.inverse_kinematics_casadi(
         target_pose,
         env.fk_fun,
-        q_init).full().flatten()
+        q_init, env.q_lower, env.q_upper
+        ).full().flatten()
+    
+    # obtain elbow pos function
+    # elbow_link_name = "forearm_link"
+    # _, elbow_pos_fun,_,_,_,_ = opt.build_casadi_kinematics_dynamics(env.pin_model, elbow_link_name)
+    # # q_sol_el = opt.inverse_kinematics_casadi_elbow_above(
+    #     target_pose,
+    #     env.fk_fun,
+    #     q_init, env.q_lower, env.q_upper,
+    #     elbow_pos_fun=elbow_pos_fun
+    # ).full().flatten()
+
+    # TODO (DONE) fix inverse kinematics error 
+    # TODO (DONE) change LQR gain to get better position tracking (0.05 is kinda large)
+    # TODO (DONE) get the contact force and plotting ready for the full running pipeline?
+    # TODO see if it's possible to sense collsion from joint discountinuity? for torque feedback. do later
+    # TODO Figure out a control method to converge the tracking error since no feedforward - tune more gain or integral term added to iLQR?
     
     # back propagated trajectory data
     traj  = opt.back_propagate_traj_using_manip_ellipsoid(
@@ -1085,7 +1219,8 @@ if __name__ == "__main__":
                 T_init,
                 U_init,
                 Z_init,
-                slow_factor=1.0
+                slow_factor=10.0,
+                sim_dt = 1e-3, record_dt=1e-3
     )
 
 
