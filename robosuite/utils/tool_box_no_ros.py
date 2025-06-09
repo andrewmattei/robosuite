@@ -564,7 +564,7 @@ def to_kinova_joints(joints_rad_pi):
     return joints_deg
 
 
-def move_joints(base, desired_joints, speed=None):
+def move_joints(base, desired_joints, speed=None, local_check=check_for_end_or_abort):
     # move the joints to a desired position
     # desired_joints is a list of joint angles in degrees
     # joint 1 is the base joint, joint 7 is the end effector joint
@@ -574,7 +574,9 @@ def move_joints(base, desired_joints, speed=None):
     action.application_data = ""
     TIMEOUT_DURATION = 10  # in seconds
     if speed is not None:
-        action.reach_joint_angles.constraint.speed = speed
+        constraint = action.reach_joint_angles.constraint
+        constraint.type = Base_pb2.JOINT_CONSTRAINT_SPEED
+        constraint.value = speed  # speed in degrees per second
 
     for joint_id in range(7):
         joint_angle = action.reach_joint_angles.joint_angles.joint_angles.add()
@@ -583,7 +585,7 @@ def move_joints(base, desired_joints, speed=None):
 
     e = threading.Event()
     notification_handle = base.OnNotificationActionTopic(
-        check_for_end_or_abort(e),
+        local_check(e),
         Base_pb2.NotificationOptions()
     )
 
@@ -599,6 +601,7 @@ def move_joints(base, desired_joints, speed=None):
     else:
         print("Timeout on action notification wait")
     return finished
+
 
 from concurrent.futures import TimeoutError
 def home_both_arms(left_base, right_base, action_name="Home"):

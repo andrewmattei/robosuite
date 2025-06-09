@@ -260,98 +260,98 @@ def inverse_kinematics_casadi_elbow_above(
     return sol['x']
 
 
-def inverse_kinematics_pin(
-    model,              # pinocchio.Model  (NumPy version)
-    data,               # pinocchio.Data
-    frame_id,           # integer frame ID of the end-effector
-    q_init,             # (7,) NumPy array in standard rep (angles)
-    target_pose,        # pin.SE3  (desired EE pose)  OR   4×4 NumPy array
-    fk_fun,             # CasADi Function: q_std (7×1) → 4×4 EE homogeneous
-    jac_fun,            # CasADi Function: q_std (7×1) → 6×7 spatial Jacobian (world‐frame)
-    tol=1e-9,
-    max_iter=100,
-):
-    """
-    A fast iterative IK that uses:
-      • `fk_fun(q_std)`    → 4×4 SX/DM “current EE pose”
-      • `jac_fun(q_std)`   → 6×7 SX/DM spatial Jacobian (world‐aligned)
-      • Pinocchio’s `integrate` and `log` (NumPy) for Δq on the manifold.
+# def inverse_kinematics_pin(
+#     model,              # pinocchio.Model  (NumPy version)
+#     data,               # pinocchio.Data
+#     frame_id,           # integer frame ID of the end-effector
+#     q_init,             # (7,) NumPy array in standard rep (angles)
+#     target_pose,        # pin.SE3  (desired EE pose)  OR   4×4 NumPy array
+#     fk_fun,             # CasADi Function: q_std (7×1) → 4×4 EE homogeneous
+#     jac_fun,            # CasADi Function: q_std (7×1) → 6×7 spatial Jacobian (world‐frame)
+#     tol=1e-9,
+#     max_iter=100,
+# ):
+#     """
+#     A fast iterative IK that uses:
+#       • `fk_fun(q_std)`    → 4×4 SX/DM “current EE pose”
+#       • `jac_fun(q_std)`   → 6×7 SX/DM spatial Jacobian (world‐aligned)
+#       • Pinocchio’s `integrate` and `log` (NumPy) for Δq on the manifold.
 
-    Args:
-      model, data   :  Pinocchio model/data (NumPy version)
-      frame_id      :  index of ee frame
-      q_init        :  (7,) NumPy “standard” joint angles
-      target_pose   :  pin.SE3  or 4×4 NumPy (desired EE pose)
-      fk_fun        :  CasADi Function: q_std → 4×4 homogeneous (SX/DM)
-      jac_fun       :  CasADi Function: q_std → 6×7 Jacobian (SX/DM)
-      tol           :  convergence tol on ‖err6‖
-      max_iter      :  max Newton steps
-      damp          :  damping weight for pseudo‐inverse
+#     Args:
+#       model, data   :  Pinocchio model/data (NumPy version)
+#       frame_id      :  index of ee frame
+#       q_init        :  (7,) NumPy “standard” joint angles
+#       target_pose   :  pin.SE3  or 4×4 NumPy (desired EE pose)
+#       fk_fun        :  CasADi Function: q_std → 4×4 homogeneous (SX/DM)
+#       jac_fun       :  CasADi Function: q_std → 6×7 Jacobian (SX/DM)
+#       tol           :  convergence tol on ‖err6‖
+#       max_iter      :  max Newton steps
+#       damp          :  damping weight for pseudo‐inverse
 
-    Returns:
-      (q_sol, success_flag)
-        • q_sol is a (7,) NumPy array (standard rep)
-        • success_flag is True if ‖err6‖ < tol within max_iter
-    """
+#     Returns:
+#       (q_sol, success_flag)
+#         • q_sol is a (7,) NumPy array (standard rep)
+#         • success_flag is True if ‖err6‖ < tol within max_iter
+#     """
 
-    R_des = target_pose[0:3, 0:3]
-    p_des = target_pose[0:3, 3]
-    oMf_des = pin.SE3(R_des, p_des)
+#     R_des = target_pose[0:3, 0:3]
+#     p_des = target_pose[0:3, 3]
+#     oMf_des = pin.SE3(R_des, p_des)
 
-    # 2) Initialize q (standard 7×1) and success flag
-    q = q_init.copy()
-    success = False
+#     # 2) Initialize q (standard 7×1) and success flag
+#     q = q_init.copy()
+#     success = False
 
-    for i in range(max_iter):
-        # 3) Evaluate FK via CasADi: returns a 4×4 DM or SX; convert to NumPy
-        Tcur_cas = fk_fun(q)   # returns a 4×4 DM if q is numpy; or SX if q is SX
-        # We want numeric, so force .full() if it’s DM:
-        if isinstance(Tcur_cas, cs.DM):
-            Tcur_num = np.array(Tcur_cas.full())
-        else:
-            # If somehow we get SX (rare, since q is numeric), explicitly evaluate:
-            Tcur_num = np.array(cs.Function('tmp', [], [Tcur_cas])().full())
+#     for i in range(max_iter):
+#         # 3) Evaluate FK via CasADi: returns a 4×4 DM or SX; convert to NumPy
+#         Tcur_cas = fk_fun(q)   # returns a 4×4 DM if q is numpy; or SX if q is SX
+#         # We want numeric, so force .full() if it’s DM:
+#         if isinstance(Tcur_cas, cs.DM):
+#             Tcur_num = np.array(Tcur_cas.full())
+#         else:
+#             # If somehow we get SX (rare, since q is numeric), explicitly evaluate:
+#             Tcur_num = np.array(cs.Function('tmp', [], [Tcur_cas])().full())
 
-        Rcur = Tcur_num[0:3, 0:3]
-        tcur = Tcur_num[0:3, 3]
-        oMf_cur = pin.SE3(Rcur, tcur)
+#         Rcur = Tcur_num[0:3, 0:3]
+#         tcur = Tcur_num[0:3, 3]
+#         oMf_cur = pin.SE3(Rcur, tcur)
 
-        # 4) Compute SE(3) error: dM = oMf_des * oMf_cur⁻¹
-        dM = oMf_des.actInv(oMf_cur)         # pin.SE3
-        err6 = pin.log(dM).vector            # 6×1 NumPy
+#         # 4) Compute SE(3) error: dM = oMf_des * oMf_cur⁻¹
+#         dM = oMf_des.actInv(oMf_cur)         # pin.SE3
+#         err6 = pin.log(dM).vector            # 6×1 NumPy
 
-        # 5) Check convergence
-        err_norm = np.linalg.norm(err6)
-        if err_norm < tol:
-            success = True
-            break
+#         # 5) Check convergence
+#         err_norm = np.linalg.norm(err6)
+#         if err_norm < tol:
+#             success = True
+#             break
 
-        # 6) Evaluate spatial Jacobian (6×7) via CasADi, convert to NumPy
-        Jcas = jac_fun(q)
-        if isinstance(Jcas, cs.DM):
-            J6 = np.array(Jcas.full())
-        else:
-            J6 = np.array(cs.Function('tmpJ', [], [Jcas])().full())
+#         # 6) Evaluate spatial Jacobian (6×7) via CasADi, convert to NumPy
+#         Jcas = jac_fun(q)
+#         if isinstance(Jcas, cs.DM):
+#             J6 = np.array(Jcas.full())
+#         else:
+#             J6 = np.array(cs.Function('tmpJ', [], [Jcas])().full())
 
-        # 7) Damped least‐squares:  solve  (J6 J6ᵀ + damp·I) x = err6
-        JJt = J6.dot(J6.T) + damp * np.eye(6)
-        sol = np.linalg.solve(JJt, err6)    # (6,)
-        dq  = -J6.T.dot(sol)                # (7,)
+#         # 7) Damped least‐squares:  solve  (J6 J6ᵀ + damp·I) x = err6
+#         JJt = J6.dot(J6.T) + damp * np.eye(6)
+#         sol = np.linalg.solve(JJt, err6)    # (6,)
+#         dq  = -J6.T.dot(sol)                # (7,)
 
-        # 8) Integrate dq on the manifold with Pinocchio
-        #    a) Convert current q (standard) → Pinocchio rep
-        q_pin = standard_to_pinocchio(model, q)  # (nq,) NumPy = (13,) if there’s free-flyer; but on Kinova it’s (7 joint dims but pinocchio uses 7+? 
-                                                # Actually, for Kinova “buildModelFromUrdf” yields an 7‐joint chain with no root free‐flyer, so nq=nq_pin=7.)
-        #    b) Integrate
-        q_pin_next = pin.integrate(model, q_pin, dq)
-        #    c) Convert back to “standard” angles
-        q = pinocchio_to_standard(model, q_pin_next)
+#         # 8) Integrate dq on the manifold with Pinocchio
+#         #    a) Convert current q (standard) → Pinocchio rep
+#         q_pin = standard_to_pinocchio(model, q)  # (nq,) NumPy = (13,) if there’s free-flyer; but on Kinova it’s (7 joint dims but pinocchio uses 7+? 
+#                                                 # Actually, for Kinova “buildModelFromUrdf” yields an 7‐joint chain with no root free‐flyer, so nq=nq_pin=7.)
+#         #    b) Integrate
+#         q_pin_next = pin.integrate(model, q_pin, dq)
+#         #    c) Convert back to “standard” angles
+#         q = pinocchio_to_standard(model, q_pin_next)
 
-        # 9) (Optional) Print every 10 iters
-        if i % 10 == 0:
-            print(f"[fast IK] iter {i:3d}  |  ‖err6‖ = {err_norm:.3e}")
+#         # 9) (Optional) Print every 10 iters
+#         if i % 10 == 0:
+#             print(f"[fast IK] iter {i:3d}  |  ‖err6‖ = {err_norm:.3e}")
 
-    return q, success
+#     return q, success
 
 
 def compute_jacobian(q, jac_fun):
@@ -388,6 +388,81 @@ def damping_pseudoinverse(J, damping=1e-4):
     """
     m, _ = J.size1(), J.size2()
     return J.T @ cs.solve(J@J.T + damping**2*cs.SX.eye(m), cs.SX.eye(m))
+
+
+def build_jacobian_derivative_function_efficient(jac_fun):
+    """
+    More efficient version using vectorized operations.
+    
+    Args:
+        jac_fun: CasADi Function that computes J(q) -> (6 x n) Jacobian matrix
+        
+    Returns:
+        jac_dot_fun: CasADi Function that computes J̇(q, dq) -> (6 x n) Jacobian derivative
+    """
+    # Get dimensions
+    n_joints = jac_fun.size1_in(0)
+    
+    # Create symbolic variables
+    q = cs.SX.sym('q', n_joints)
+    dq = cs.SX.sym('dq', n_joints)
+    
+    # Compute the Jacobian symbolically
+    J = jac_fun(q)
+    
+    # Compute the full Jacobian of J w.r.t. q
+    # This gives us ∂J/∂q as a 3D tensor flattened into a 2D matrix
+    J_flat = cs.reshape(J, -1, 1)  # Flatten J into a column vector
+    dJ_dq = cs.jacobian(J_flat, q)  # Shape: (rows*cols, n_joints)
+    
+    # Multiply by dq to get the time derivative
+    J_dot_flat = dJ_dq @ dq  # Shape: (rows*cols, 1)
+    
+    # Reshape back to original Jacobian dimensions
+    J_dot = cs.reshape(J_dot_flat, J.size1(), J.size2())
+    
+    # Create the CasADi function
+    jac_dot_fun = cs.Function('jac_dot', [q, dq], [J_dot])
+    
+    return jac_dot_fun
+
+
+def build_position_jacobian_derivative_function(jac_fun):
+    """
+    Build Jacobian derivative function specifically for the position part (first 3 rows).
+    
+    Args:
+        jac_fun: CasADi Function that computes J(q) -> (6 x n) full spatial Jacobian
+        
+    Returns:
+        jac_pos_dot_fun: CasADi Function that computes J̇_pos(q, dq) -> (3 x n) position Jacobian derivative
+    """
+    # Get dimensions
+    n_joints = jac_fun.size1_in(0)
+    
+    # Create symbolic variables
+    q = cs.SX.sym('q', n_joints)
+    dq = cs.SX.sym('dq', n_joints)
+    
+    # Compute the full Jacobian and extract position part
+    J6 = jac_fun(q)
+    J_pos = J6[0:3, :]  # Position Jacobian (3 x n)
+    
+    # Compute the time derivative of position Jacobian
+    J_pos_flat = cs.reshape(J_pos, -1, 1)  # Flatten to column vector
+    dJ_pos_dq = cs.jacobian(J_pos_flat, q)  # Shape: (3*n, n)
+    
+    # Multiply by dq to get time derivative
+    J_pos_dot_flat = dJ_pos_dq @ dq  # Shape: (3*n, 1)
+    
+    # Reshape back to (3 x n)
+    J_pos_dot = cs.reshape(J_pos_dot_flat, 3, n_joints)
+    
+    # Create the CasADi function
+    jac_pos_dot_fun = cs.Function('jac_pos_dot', [q, dq], [J_pos_dot])
+    
+    return jac_pos_dot_fun
+
 
 
 def compute_symbolic_cartesian_acceleration(
@@ -699,6 +774,7 @@ def back_propagate_traj_using_manip_ellipsoid(
     v_f_mag       = np.linalg.norm(v_f)
     if v_f_mag < 1e-8:
         raise ValueError("||v_f|| must be nonzero")
+    accel_mag = None
     
     if v_p_mag is not None:
         # create a velocity profile that peaks at v_peak at some point such that
@@ -717,6 +793,8 @@ def back_propagate_traj_using_manip_ellipsoid(
         v_profile = np.concatenate([v_acc_profile, v_dec_profile])
         # reverse the profile so that it starts at v_f_mag and ends at 0
         v_profile = v_profile[::-1]
+        time_ip = i_p * dt
+        accel_mag = v_p_mag / time_ip
 
 
     # 1) initial unit-twist and seed for sign‐check
@@ -732,6 +810,15 @@ def back_propagate_traj_using_manip_ellipsoid(
     qd_final = J6_damp @ twist_init
     traj.append((q_curr.copy(), qd_final.copy()))
 
+    # find the motion plane defined by the robot base origin to p_f and the velocity vector v_f
+    # this is the plane where the end-effector will move
+    # the normal vector of the plane is the cross product of the p_f and v_f vectors
+    p_f = fk_fun(q_curr)[:3, 3].full().flatten()  # end-effector position
+    # the plane normal is the cross product between p_f and v_f
+    plane_normal = np.cross(p_f, v_f)
+    # normalize the plane normal
+    plane_normal /= np.linalg.norm(plane_normal) + 1e-8  # avoid division by zero
+
     # BACK-PROPAGATION LOOP
     for i in range(1, N+1):
         alpha = (i / float(N))**4
@@ -743,11 +830,20 @@ def back_propagate_traj_using_manip_ellipsoid(
         # 2) principal translation direction via SVD
         Uvel, _, _ = np.linalg.svd(J_vel)
         u1         = Uvel[:, 0]
+        
 
         # 3) enforce sign consistency
         if np.dot(u1, u1_prev) < 0:
             u1 = -u1
         u1_prev = u1
+
+        # TODO 06/06/25: here maybe project the u1 onto the plane defined with:
+        # robot base origin, p_f, and v_f
+        # project u1 onto the plane normal
+        vertical_component = np.dot(u1, plane_normal) * plane_normal
+        u1 = u1 - vertical_component  # remove the vertical component
+        # normalize u1 to keep the direction
+        u1 /= np.linalg.norm(u1) + 1e-8
 
         # 4) build manipulability-only twist
         twist_mm = np.concatenate([u1, np.zeros(3)])
@@ -802,7 +898,11 @@ def back_propagate_traj_using_manip_ellipsoid(
         'dq': dq,
         'U':  np.zeros((q.shape[0], q.shape[1])),
         'T':  dt * np.arange(q.shape[1]),
-        'Z':  np.vstack((q, dq))
+        'Z':  np.vstack((q, dq)),
+        'q_f': q_f,  # final joint angles
+        'v_f': v_f,  # final end-effector linear velocity
+        'v_p_mag': v_p_mag,  # peak velocity magnitude if given
+        'accel_mag': accel_mag  # magnitude of the acceleration profile
     }
 
 def back_propagate_traj_using_max_inertial_direction(
@@ -878,40 +978,194 @@ def back_propagate_traj_using_max_inertial_direction(
     return traj
     
 
-# def get_U_from_Z_using_inverse_dynamics(
-#     Z, M_fun, C_fun, G_fun=None
-# ):
-#     """
-#     Compute joint torques from joint positions and velocities using inverse dynamics.
+def forward_propagate_and_blend_to_goal(
+        q_f, v_f, q_next_init, 
+):
+    """
+    Forward propagate the trajectory and blend with the goal.
+    This might be a 2 point boundary value problem (BVP).
+    """
+    # TODO: 
+    pass
+
+
+def back_trace_from_traj(traj, jac_fun, ratio=0.5):
+    """
+    Reverse the trajectory generated from the back_propagation above
+    and execute until ee_velocity reaches ratio * v_p_mag, it will then 
+    deccelerate to zero with the same magnitude of acceleration.
+    Args:
+        traj: dict with keys 'q', 'dq', 'U', 'T', 'Z', 'q_f', 'v_f', 'v_p_mag', 'accel_mag'
+        jac_fun: CasADi function to compute the Jacobian
+        ratio: float, the ratio of the current peak velocity to the traj peak velocity
+
+    Returns:
+        dict with keys 'q', 'dq', 'U', 'T', 'Z', 'v_p_curr' representing the back-traced trajectory
+    """
+    # Extract trajectory data
+    q_orig = traj['q']         # (7, N+1)
+    dq_orig = traj['dq']       # (7, N+1)
+    T_orig = traj['T']         # (N+1,)
+    v_f = np.array(traj['v_f']).flatten()  # (3,)
+    v_p_mag = traj.get('v_p_mag', None)
+    accel_mag = traj.get('accel_mag', None)
     
-#     Args:
-#         Z (14, N+1) : stacked [q; dq] trajectory
-#         M_fun       : function q → M(q) inertia matrix
-#         C_fun       : function q, qd → C(q, qd) Coriolis matrix
-#         G_fun       : function q → G(q) gravity vector (optional)
-#     Returns:
-#         U (7, N+1)    : joint torques at each time step
-#     """
-#     N = Z.shape[1] - 1  # number of time steps
-#     nv = M_fun.size1_in(0)  # number of joints
+    # Reverse the trajectory (start from end, go to beginning)
+    q_rev = q_orig[:, ::-1]    # (7, N+1) - reversed
+    dq_rev = -dq_orig[:, ::-1] # (7, N+1) - reversed and sign-flipped
+    T_rev = T_orig             # Keep original time vector - much simpler!
 
-#     U = np.zeros((nv, N+1))  # (7, N)
+    dt_orig = T_rev[1] - T_rev[0] if len(T_rev) > 1 else 0.01
+    
+    # Calculate current peak velocity from the original trajectory
+    if v_p_mag is None:
+        # If v_p_mag not provided, estimate from the trajectory
+        v_ee_magnitudes = []
+        for k in range(q_orig.shape[1]):
+            J6_k = jac_fun(q_orig[:, k]).full()
+            v_ee_k = J6_k[0:3, :] @ dq_orig[:, k]
+            v_ee_magnitudes.append(np.linalg.norm(v_ee_k))
+        v_p_mag = max(v_ee_magnitudes)
+    
+    # Calculate the new peak velocity
+    v_p_curr = ratio * v_p_mag
 
-#     for k in range(N):
-#         qk  = Z[:nv, k]
-#         qdk = Z[nv:, k]
-#         qddk = Z[nv:, k+1] - Z[nv:, k]  # finite difference
-#         M_k = M_fun(qk)  # (nv, nv)
-#         C_k = C_fun(qk, qdk)  # (nv, nv)
-#         G_k = G_fun(qk) if G_fun is not None else np.zeros(nv)  # (nv,)
-#         # Compute joint torques using inverse dynamics
-#         U[:, k] = (M_k @ qddk + C_k @ qdk + G_k).full().flatten()
+    
+    # If ratio is 1.0 or greater, just return the reversed trajectory
+    if ratio >= 1.0:
+        return {
+            'q': q_rev,
+            'dq': dq_rev,
+            'U': np.zeros_like(q_rev),
+            'T': T_rev,
+            'Z': np.vstack((q_rev, dq_rev)),
+            'v_p_curr': v_p_curr
+        }
+    
+    # Phase 1: Follow reversed trajectory until v_ee reaches v_p_curr
+    # Calculate end-effector velocities along reversed trajectory
+    v_ee_traj = []
+    for k in range(q_rev.shape[1]):
+        J6_k = jac_fun(q_rev[:, k]).full()
+        v_ee_k = J6_k[0:3, :] @ dq_rev[:, k]
+        v_ee_mag_k = np.linalg.norm(v_ee_k)
+        v_ee_traj.append(v_ee_mag_k)
+    
+    # Find the index where v_ee first reaches v_p_curr
+    peak_idx = None
+    for k in range(len(v_ee_traj)):
+        if v_ee_traj[k] >= v_p_curr:
+            peak_idx = k
+            break
+    
+    if peak_idx is None:
+        # If peak velocity never reached, use the entire reversed trajectory
+        peak_idx = len(v_ee_traj) - 1
+        v_p_curr = v_ee_traj[peak_idx]
+    
+    # Phase 1: Use reversed trajectory up to peak
+    q_phase1 = q_rev[:, :peak_idx+1]
+    dq_phase1 = dq_rev[:, :peak_idx+1]
+    T_phase1 = T_rev[:peak_idx+1]
+    
+    # Phase 2: Decelerate from v_p_curr to 0
+    # Estimate acceleration magnitude if not provided
+    if accel_mag is None:
+        # Use the deceleration from the original trajectory
+        if peak_idx > 0:
+            accel_mag = (v_ee_traj[peak_idx] - v_ee_traj[peak_idx-1]) / dt_orig
+        else:
+            accel_mag = v_p_curr / dt_orig  # Fallback estimate
+    
+    # Calculate deceleration time
+    t_decel = v_p_curr / abs(accel_mag)
+    n_decel = max(1, int(t_decel / dt_orig))
+    
+    # Get the position and velocity direction at peak
+    q_peak = q_phase1[:, -1]
+    J6_peak = jac_fun(q_peak).full()
+    v_ee_peak = J6_peak[0:3, :] @ dq_phase1[:, -1]
+    v_ee_peak_mag = np.linalg.norm(v_ee_peak)
+    
+    if v_ee_peak_mag > 1e-8:
+        v_ee_direction = v_ee_peak / v_ee_peak_mag
+    else:
+        # Fallback to final velocity direction from original trajectory
+        v_ee_direction = -v_f / np.linalg.norm(v_f)
+    
+    # Phase 2: Generate deceleration trajectory
+    q_phase2 = []
+    dq_phase2 = []
+    T_phase2 = []
+    
+    q_current = q_peak.copy()
+    
+    for i in range(1, n_decel + 1):
+        # Linear velocity profile during deceleration
+        progress = i / n_decel
+        v_ee_mag_current = v_p_curr * (1 - progress)  # Linear deceleration to 0
+        
+        # Desired end-effector velocity
+        v_ee_desired = v_ee_direction * v_ee_mag_current
+        
+        # Solve for joint velocities using damped pseudo-inverse
+        J6_current = jac_fun(q_current)
+        J_vel_current = J6_current[0:3, :]
+        J_vel_pinv = cs.DM(damping_pseudoinverse(J_vel_current)).full()
+        dq_current = J_vel_pinv @ v_ee_desired
+        
+        # Integrate position (assuming small time steps)
+        q_current = q_current + dt_orig * dq_current
+        
+        # Store trajectory point
+        q_phase2.append(q_current.copy())
+        dq_phase2.append(dq_current.copy())
+        T_phase2.append(T_phase1[-1] + i * dt_orig)
+    
+    # Combine phases
+    if len(q_phase2) > 0:
+        q_phase2 = np.array(q_phase2).T    # (7, n_decel)
+        dq_phase2 = np.array(dq_phase2).T  # (7, n_decel)
+        T_phase2 = np.array(T_phase2)      # (n_decel,)
+        
+        # Concatenate phases
+        q_combined = np.hstack([q_phase1, q_phase2])
+        dq_combined = np.hstack([dq_phase1, dq_phase2])
+        T_combined = np.concatenate([T_phase1, T_phase2])
+    else:
+        # Only phase 1
+        q_combined = q_phase1
+        dq_combined = dq_phase1
+        T_combined = T_phase1
+    
+    # Create control torques (placeholder)
+    U_combined = np.zeros((q_combined.shape[0], q_combined.shape[1]))
+    
+    # Calculate actual velocity profile for verification
+    v_profile_actual = []
+    for k in range(q_combined.shape[1]):
+        J6_k = jac_fun(q_combined[:, k]).full()
+        v_ee_k = J6_k[0:3, :] @ dq_combined[:, k]
+        v_profile_actual.append(np.linalg.norm(v_ee_k))
+    
+    Z_combined = np.vstack((q_combined, dq_combined))  # (14, N+1)
 
-#     # Last column repeats the last torque
-#     U[:, -1] = U[:, -2]  # repeat last torque for the final time step
-
-#     return U
-
+    # Package results
+    result = {
+        'q': q_combined,
+        'dq': dq_combined,
+        'U': U_combined,
+        'T': T_combined,
+        'Z': Z_combined,
+        'v_p_curr': v_p_curr,
+        'v_profile_actual': np.array(v_profile_actual),
+        'peak_index': peak_idx,
+        'phase1_points': peak_idx + 1,
+        'phase2_points': len(q_phase2) if len(q_phase2) > 0 else 0,
+        'total_time': T_combined[-1] if len(T_combined) > 0 else 0
+    }
+    
+    return result
 
 def optimize_trajectory_cartesian_accel_flex_pose(
     model, data, frame_name,

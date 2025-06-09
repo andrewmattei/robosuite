@@ -19,9 +19,11 @@ import mujoco
 import time, os
 import matplotlib.pyplot as plt
 
+import casadi as cs
 import pinocchio as pin
 import pinocchio.casadi as cpin
 import robosuite.demos.optimizing_gen3_arm as opt
+import robosuite.utils.tool_box_no_ros as tb
 
 # Load reference trajectory
 current_path = os.path.dirname(os.path.realpath(__file__))
@@ -105,6 +107,8 @@ class Kinova3ContactControl(ManipulationEnv):
         self.G_fun = None
         self.pin_model, self.pin_data = opt.load_kinova_model()
         self.fk_fun, self.pos_fun, self.jac_fun, self.M_fun, self.C_fun, self.G_fun = opt.build_casadi_kinematics_dynamics(self.pin_model)
+        self.jdot_pos_fun = opt.build_position_jacobian_derivative_function(self.jac_fun)
+        self.jdot_fun = opt.build_jacobian_derivative_function_efficient(self.jac_fun)
 
         rev_lim = np.pi * 2
         self.q_lower   =  np.array([-rev_lim, -2.41, -rev_lim, -2.66, -rev_lim, -2.23, -rev_lim])
@@ -116,9 +120,16 @@ class Kinova3ContactControl(ManipulationEnv):
 
         self.init_jogging = True
         self.viewer = None
+
+        self.v_f = None
+        self.p_f = None
+        self.v_p_mag = None
+        self.R_f = None
         
         # for LQR controller
+        self.reversed_traj = None
         self.linearization_cache = None
+        self.reversed_linearization_cache = None
 
         super().__init__(
             robots=robots,
@@ -530,16 +541,16 @@ class Kinova3ContactControl(ManipulationEnv):
         return tau
     
 
-    def lqr_tracking_controller(self, current_time, T_opt, U_opt, Z_opt, horizon=100):
+    def lqr_tracking_controller(self, current_time, T_opt, U_opt, Z_opt, horizon=100, cache=None):
         """
         Real-time LQR controller that interpolates Z_opt and U_opt.
         Assumes self.linearization_cache holds (A_list, B_list).
         """
         # Make sure we've already called linearize_dynamics_along_trajectory
-        if self.linearization_cache is None:
-            raise RuntimeError("Call linearize_dynamics_along_trajectory before using this controller.")
+        if cache is None:
+            cache = self.linearization_cache
 
-        A_list, B_list = self.linearization_cache
+        A_list, B_list = cache
 
         # 1) Interpolate feed-forward torque and reference state
         u_ff, z_ref = opt.match_trajectories(current_time, T_opt, U_opt, T_opt, Z_opt)
@@ -578,10 +589,14 @@ class Kinova3ContactControl(ManipulationEnv):
         idxs    = robot._ref_joint_pos_indexes
         q_curr  = self.sim.data.qpos[idxs]
         dq_curr = self.sim.data.qvel[idxs]
-        z_curr  = np.hstack((q_curr, dq_curr))
 
-        # 7) Compute LQR command: u = u_ff – K0 · (z_curr – z_ref)
-        tau = u_ff.flatten() - K0 @ (z_curr - z_ref.flatten())
+        q_error_raw = q_curr - z_ref[:control_dim].flatten()
+        q_error = (q_error_raw + np.pi) % (2 * np.pi) - np.pi
+        dq_error = dq_curr - z_ref[control_dim:].flatten()
+        z_error = np.concatenate((q_error, dq_error)).flatten()
+        
+        # Compute LQR command
+        tau = u_ff.flatten() - K0 @ z_error
 
         # 8) Zero out after trajectory end
         if current_time > T_opt[-1]:
@@ -614,6 +629,154 @@ class Kinova3ContactControl(ManipulationEnv):
         
         # Compute required torques using inverse dynamics
         return self.inverse_dynamics(ddq_des)
+    
+
+    def lyapunov_ee_retreat_controller(self, v_f, d_up, R_des=None, current_time=0.0, 
+                                 Kp=100.0, Kd=20.0, alpha=1.0,
+                                 start_pos=None, max_time=5.0):
+        """
+        Lyapunov-based controller to move end-effector in opposite direction of v_f
+        for a distance d_up with guaranteed convergence.
+        
+        Args:
+            v_f: Final velocity vector (3,) - direction to move away from
+            d_up: Distance to move in opposite direction (scalar)
+            current_time: Current time for initialization
+            Kp: Position gain (scalar or 3x3 matrix)
+            Kd: Damping gain (scalar or 3x3 matrix)  
+            alpha: Convergence rate parameter
+            start_pos: Starting end-effector position (if None, uses current)
+            max_time: Maximum time for the motion
+            
+        Returns:
+            tau: Control torques (7,)
+            finished: Boolean indicating if target reached
+        """
+        # Get current robot state
+        robot = self.robots[0]
+        indices = robot._ref_joint_pos_indexes
+        q_curr = self.sim.data.qpos[indices]
+        dq_curr = self.sim.data.qvel[indices]
+        
+        # Get current end-effector position and velocity
+        H_base_ee = self._ee_pose_in_base(robot)
+        ee_pos_curr = H_base_ee[:3, 3]
+        R_ee_curr = H_base_ee[:3, :3]
+        ee_vel_curr, ee_omega_curr = self._ee_twist_in_base(robot)
+        
+        # Initialize starting position if not provided
+        if not hasattr(self, '_retreat_start_pos') or start_pos is not None:
+            self._retreat_start_pos = start_pos if start_pos is not None else ee_pos_curr.copy()
+            self._retreat_start_time = current_time
+
+            # set target orientation
+            if R_des is not None:
+                self._R_des = R_des.copy()
+            else:
+                # Use current orientation if no desired orientation provided
+                self._R_des = R_ee_curr.copy()
+        
+        # Calculate retreat direction (opposite to v_f)
+        v_f_norm = np.linalg.norm(v_f)
+        if v_f_norm < 1e-8:
+            print("Warning: v_f magnitude too small, using default z-direction")
+            retreat_direction = np.array([0, 0, 1])
+        else:
+            retreat_direction = -v_f / v_f_norm  # Opposite direction
+        
+        # Target position: start_pos + d_up * retreat_direction
+        p_target = self._retreat_start_pos + d_up * retreat_direction
+        
+        # Position error in task space
+        p_error = p_target - ee_pos_curr
+        p_error_norm = np.linalg.norm(p_error)
+
+        # Orientation error in task space
+        ER = R_ee_curr @ self._R_des.T # Desired orientation relative to current
+        k, theta = tb.R2rot(ER)  # Axis-angle representation
+        k = np.array(k)
+        rot_error = -np.sin(theta/2) * k  # Error vector for orientation
+        # print(theta)
+        print(ER[0, 0], ER[1, 1], ER[2, 2], ER[0, 1], ER[0, 2], ER[1, 2])
+    
+        # Check if target reached
+        position_tolerance = 0.05  # 5mm
+        velocity_tolerance = 0.01   # 1cm/s
+        ee_vel_norm = np.linalg.norm(ee_vel_curr)
+
+        # print(f"Retreat: p_error={p_error_norm:.4f}m, ee_vel={ee_vel_norm:.4f}m/s, target={p_target}, current={ee_pos_curr}")
+        
+        if p_error_norm < position_tolerance and ee_vel_norm < velocity_tolerance:
+            # Target reached - apply zero torque
+            print(f"Retreat target reached: error={p_error_norm:.4f}m, vel={ee_vel_norm:.4f}m/s")
+            return self.inverse_dynamics(np.zeros_like(dq_curr)), True
+        
+        # Check timeout
+        if current_time - self._retreat_start_time > max_time:
+            print(f"Retreat timeout reached: error={p_error_norm:.4f}m")
+            return self.inverse_dynamics(np.zeros_like(dq_curr)), True
+        
+        # Convert gains to matrices if scalars
+        rad_mm_error_scale = 30.0
+        if np.isscalar(Kp):
+            Kp_pos = Kp * np.eye(3)
+            Kp_orient = Kp * rad_mm_error_scale * np.eye(3)  # Lower gain for orientation
+        else:
+            Kp_pos = np.array(Kp)
+            Kp_orient = np.array(Kp) * rad_mm_error_scale
+
+        if np.isscalar(Kd):
+            Kd_pos = Kd * np.eye(3)
+            Kd_orient = Kd * rad_mm_error_scale * np.eye(3)  # Lower damping for orientation
+        else:
+            Kd_pos = np.array(Kd)
+            Kd_orient = np.array(Kd) * rad_mm_error_scale
+        
+        # Lyapunov-based control law in task space
+        # V = 0.5 * p_error^T * Kp * p_error + 0.5 * ee_vel^T * ee_vel
+        # For V_dot < 0, we choose: ee_accel_des = Kp * p_error - Kd * ee_vel - alpha * p_error
+        
+        # Desired end-effector acceleration
+        ee_accel_pos_des = Kp_pos @ p_error - Kd_pos @ ee_vel_curr - alpha * p_error
+        ee_accel_ori_des = Kp_orient @ rot_error - Kd_orient @ ee_omega_curr - alpha * rot_error
+        ee_accel_des = np.concatenate((ee_accel_pos_des, ee_accel_ori_des))
+
+        # Get current Jacobian
+        J6 = self.jac_fun(q_curr)
+        
+        # Compute Jacobian time derivative for acceleration mapping
+        J_dot = self.jdot_fun(q_curr, dq_curr).full()
+
+        # Map desired task-space acceleration to joint space
+        # ee_accel = J * ddq + J_dot * dq
+        # Solve for ddq: ddq = J_pinv @ (ee_accel_des - J_dot @ dq)
+        
+        # Use damped pseudo-inverse for numerical stability
+        J_damped = cs.DM(opt.damping_pseudoinverse(J6)).full()
+        
+        ddq_des = J_damped @ (ee_accel_des - J_dot @ dq_curr)
+        
+        # Add null-space control to maintain joint limits and comfort
+        # Null-space projection: N = I - J_pinv @ J
+        N = np.eye(robot.dof) - J_damped @ J6.full()
+
+        # Null-space objective: move towards comfortable joint configuration
+        q_nominal = np.radians([0, 15, 180, -130, 0, -35, 90])  # Comfortable Gen3 pose
+        q_diff = q_nominal - q_curr
+        q_diff = (q_diff + np.pi) % (2 * np.pi) - np.pi  # Normalize to [-pi, pi]
+        ddq_null = 10.0 * q_diff - 5.0 * dq_curr
+        
+        # Combine task-space and null-space control
+        ddq_total = ddq_des + N @ ddq_null
+        
+        # Compute required torques using inverse dynamics
+        tau = self.inverse_dynamics(ddq_total)
+
+        # # Additional damping for stability
+        # tau_damping = -2.0 * dq_curr
+        # tau += tau_damping
+        
+        return tau, False
         
     
 
@@ -779,10 +942,12 @@ class Kinova3ContactControl(ManipulationEnv):
         impact_flag = False
         # choose 0.80/1 point of the trajectory to be the q_end for post impact
         q_end = Z_opt[:robot.dof, int(len(T_opt) *0.80)]
-
+        T_rev = self.reversed_traj['T']
+        Z_rev = self.reversed_traj['Z']
+        U_rev = self.reversed_traj['U']
 
         # run until just past final time
-        while data.time < T_opt[-1] * 1.5:
+        while data.time < T_opt[-1] * 2.5:
             mujoco.mj_forward(model, data)
 
             total_force = 0.0
@@ -816,16 +981,38 @@ class Kinova3ContactControl(ManipulationEnv):
                         phase = "post_impact"
 
                 elif phase == "post_impact":
-                    tau = self.post_contact_joint_ctrl(q_end)
-                    error = np.linalg.norm(data.qpos - q_end)
-                    if error < 0.04:
-                        print(f"End-effector reached target position at time {data.time:.3f}s")
+                    ### method 1
+                    # tau = self.post_contact_joint_ctrl(q_end)
+                    # error = np.linalg.norm(data.qpos - q_end)
+                    # if error < 0.04:
+                    #     print(f"End-effector reached target position at time {data.time:.3f}s")
+                    #     break
+                    # reverse tracking the trajectory
+                    ### method 2
+                    # tau = self.lqr_tracking_controller(
+                    #     data.time-impact_time,T_rev, U_rev, Z_rev, horizon=100,
+                    #     cache=self.reversed_linearization_cache)
+                    # # if data.time > impact_time + T_rev[-1]:
+                    # q_err = Z_rev[:7, -1].flatten() - q_curr
+                    # q_err = (q_err + np.pi) % (2 * np.pi) - np.pi
+                    # q_err_norm = np.linalg.norm(q_err)
+                    # print(f"Post-impact control: error = {q_err_norm:.4f}")
+                    # if q_err_norm < 0.05:
+                    #     print(f"Post-impact control completed at time {data.time:.3f}s")
+                    #     break
+                    ### method 3
+                    tau, finished = self.lyapunov_ee_retreat_controller(
+                        self.v_f, 0.2, R_des=self.R_f, current_time=data.time,
+                        Kp=100.0, Kd=20, alpha=1.0)
+                    if finished:
+                        print(f"Post-impact retreat completed at time {data.time:.3f}s")
                         break
+
                
                 # bound torques
                 tau = np.clip(tau, self.tau_lower, self.tau_upper)
 
-                if impact_time is None or data.time < impact_time + 0.02:
+                if impact_time is None or data.time < impact_time + T_opt[-1]:
                     # joint log
                     q_pos.append(q_curr.copy())
                     q_vel.append(dq_curr.copy())
@@ -1163,10 +1350,15 @@ if __name__ == "__main__":
 
     ## generate an initialization trajectory
     # example optimization
+    # p_ee_to_ball_buttom = 0.05 + 0.025
+    # p_f = np.array([0.5, 0.0, p_ee_to_ball_buttom])    # meters
+    # v_f = np.array([0, 0, -0.05])   # m/s
+    # v_p_mag = 1.0 # m/s
+
     p_ee_to_ball_buttom = 0.05 + 0.025
-    p_f = np.array([0.5, 0.0, p_ee_to_ball_buttom])    # meters
-    v_f = np.array([0, 0, -0.05])   # m/s
-    v_p_mag = 1.0 # m/s
+    p_f = np.array([0.5, 0.05, p_ee_to_ball_buttom])    # meters
+    v_f = np.array([0, 0, -0.4111])   # m/s
+    v_p_mag = np.linalg.norm(v_f)+0.5
     q_init = active_robot.init_qpos
     target_pose = env.fk_fun(q_init).full()
     target_pose[:3, 3] = p_f
@@ -1193,10 +1385,17 @@ if __name__ == "__main__":
     # TODO Figure out a control method to converge the tracking error since no feedforward - tune more gain or integral term added to iLQR?
     
     # back propagated trajectory data
+    T = 1.0  # seconds
+    N = 150  # number of points
+    dt = T / (N)  # time step
     traj  = opt.back_propagate_traj_using_manip_ellipsoid(
-        v_f, q_sol, env.fk_fun, env.jac_fun, N=100, dt=0.01, v_p_mag=v_p_mag
+        v_f, q_sol, env.fk_fun, env.jac_fun, N=N, dt=dt, v_p_mag=v_p_mag
     )
 
+    env.v_f= v_f
+    env.p_f = p_f
+    env.v_p_mag = v_p_mag
+    env.R_f = target_pose[:3, :3]  # desired end-effector orientation
     
 
     ## or using the max inertial direction
@@ -1214,12 +1413,19 @@ if __name__ == "__main__":
         T_init, U_init, Z_init, env.M_fun, env.C_fun, env.G_fun
     )
 
+    traj_reversed = opt.back_trace_from_traj(traj, env.jac_fun, ratio = 0.6)
+    env.reversed_linearization_cache = opt.linearize_dynamics_along_trajectory(
+        traj_reversed['T'], traj_reversed['U'], traj_reversed['Z'],
+        env.M_fun, env.C_fun, env.G_fun
+    )
+    env.reversed_traj = traj_reversed
+
 
     sim_data = env.run_simulation_offscreen(
                 T_init,
                 U_init,
                 Z_init,
-                slow_factor=10.0,
+                slow_factor=1.0,
                 sim_dt = 1e-3, record_dt=1e-3
     )
 
