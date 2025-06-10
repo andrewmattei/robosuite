@@ -408,6 +408,468 @@ def collect_single_trajectory(gen3, p_f, v_f, run_id, save_dir):
             pass
         return None
 
+#################################################
+# BRS VALIDATION MODULE
+#################################################
+
+def validate_brs_samples():
+    """
+    Validate BRS samples by running experiments for each validation sample
+    and recording the results.
+    """
+    print("\n" + "="*60)
+    print("🔍 BRS SAMPLE VALIDATION")
+    print("="*60)
+    
+    # Setup arguments for connection
+    args = TCPArguments()
+    
+    # First, select the BRS sample file
+    brs_file = select_brs_sample_file()
+    if not brs_file:
+        print("No BRS sample file selected. Exiting validation.")
+        return
+    
+    # Load BRS sample data
+    samples, goal_set = load_brs_samples(brs_file)
+    if not samples or len(samples) == 0:
+        print("Failed to load samples from file or no samples found.")
+        return
+    
+    # Create output directory for validation results
+    date_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    validation_dir = os.path.join(os.path.dirname(__file__), '..', 'results', f'brs_validation_{date_str}')
+    os.makedirs(validation_dir, exist_ok=True)
+    
+    # Create HDF5 file for validation results
+    validation_hdf5 = os.path.join(validation_dir, 'brs_validation_results.hdf5')
+    
+    print(f"Found {len(samples)} validation samples in BRS file")
+    print(f"Results will be saved to: {validation_dir}")
+    
+    # Connect to robot and execute validation
+    with kortex_utils.DeviceConnection.createTcpConnection(args) as router, \
+         kortex_utils.DeviceConnection.createUdpConnection(args) as router_real_time:
+        
+        # Create controller
+        gen3 = hw_ctrl.Kinova3HardwareController(
+            router, router_real_time, 
+            home_pose="Mujoco_Home",
+            use_friction_compensation=False
+        )
+        
+        # Move to home position initially
+        print("Moving to home position...")
+        finished = gen3.move_to_home_position()
+        if gen3.action_aborted or not finished:
+            print("Failed to move to home position. Exiting.")
+            return
+        
+        # Initialize validation results file
+        with h5py.File(validation_hdf5, 'w') as f:
+            # Save metadata
+            meta = f.create_group('metadata')
+            meta.create_dataset('validation_date', data=date_str)
+            meta.create_dataset('brs_file', data=os.path.basename(brs_file))
+            meta.create_dataset('total_samples', data=len(samples))
+            
+            # Save goal set if available
+            if len(goal_set) > 0:
+                goal_grp = f.create_group('goal_set')
+                goal_grp.create_dataset('bounds', data=goal_set)
+                print(f"Saved goal set bounds to validation file")
+            
+            # Create parameters group
+            params = f.create_group('parameters')
+            params.create_dataset('q_lower', data=gen3.q_lower)
+            params.create_dataset('q_upper', data=gen3.q_upper)
+            params.create_dataset('dq_lower', data=gen3.dq_lower)
+            params.create_dataset('dq_upper', data=gen3.dq_upper)
+            params.create_dataset('tau_lower', data=gen3.tau_lower)
+            params.create_dataset('tau_upper', data=gen3.tau_upper)
+            
+            # Track success metrics
+            successful_runs = 0
+            pos_achieved_count = 0
+            vel_achieved_count = 0
+            
+            # Run validation for each sample
+            for i, (p_f_des, v_f_des) in enumerate(samples):
+                p_f_des = np.array(p_f_des).flatten()
+                v_f_des = np.array(v_f_des).flatten()
+                print(f"\n{'='*50}")
+                print(f"Validating Sample {i+1}/{len(samples)}")
+                print(f"p_f_des: {p_f_des}")
+                print(f"v_f_des: {v_f_des}")
+                print(f"{'='*50}")
+                
+                # Reset controller state between trajectories
+                gen3.kill_the_thread = False
+                gen3.already_stopped = False
+                gen3.cyclic_running = False
+                gen3.action_aborted = False
+                
+                # Clear previous data
+                gen3.times = []
+                gen3.q_pos = []
+                gen3.q_vel = []
+                gen3.ee_pos = []
+                gen3.ee_vel = []
+                gen3.tau_log = []
+                gen3.tau_measured = []
+                gen3.tau_friction = []
+                
+                # Format run ID with proper padding
+                n_digits = len(str(len(samples)))
+                run_id = str(i).zfill(n_digits)
+                
+                # Run validation for this sample
+                results = collect_single_trajectory(gen3, p_f_des, v_f_des, run_id, validation_dir)
+                
+                if results is not None:
+                    # Extract actual impact values
+                    p_f_act = results['impact_pos']
+                    v_f_act = results['impact_vel']
+                    
+                    # Calculate error metrics
+                    pos_error = np.linalg.norm(p_f_act - p_f_des) if p_f_act is not None else None
+                    vel_error = np.linalg.norm(v_f_act - v_f_des) if v_f_act is not None else None
+                    
+                    # Check goal set achievement if goal_set is available
+                    pos_achieved = False
+                    vel_achieved = False
+                    
+                    if len(goal_set) > 0 and p_f_act is not None and v_f_act is not None:
+                        # Check if it's in position goal_set[0,:2] <= p_f_act[:2] <= goal_set[1,:2]
+                        pos_achieved = np.all(goal_set[0,:2] <= p_f_act[:2]) and np.all(p_f_act[:2] <= goal_set[1,:2])
+                        if pos_achieved:
+                            print(f"✅ Position goal achieved for sample {i+1}")
+                            pos_achieved_count += 1
+                        else:
+                            print(f"❌ Position goal NOT achieved for sample {i+1}")
+                            print(f"   Target: {p_f_act[:2]}")
+                            print(f"   Bounds: [{goal_set[0,:2]}, {goal_set[1,:2]}]")
+
+                        vel_achieved = np.all(goal_set[0,2] <= v_f_act[2]) and np.all(v_f_act[2] <= goal_set[1,2])
+                        if vel_achieved:
+                            print(f"✅ Velocity goal achieved for sample {i+1}")
+                            vel_achieved_count += 1
+                        else:
+                            print(f"❌ Velocity goal NOT achieved for sample {i+1}")
+                            print(f"   Target: {v_f_act[2]}")
+                            print(f"   Bounds: [{goal_set[0,2]}, {goal_set[1,2]}]")
+                    else:
+                        # Fallback to error-based success criteria
+                        pos_threshold = 0.02  # 2cm position error threshold
+                        vel_threshold = 0.05  # 0.05 m/s velocity error threshold
+                        
+                        pos_achieved = pos_error is not None and pos_error < pos_threshold
+                        vel_achieved = vel_error is not None and vel_error < vel_threshold
+                        
+                        if pos_achieved:
+                            pos_achieved_count += 1
+                        if vel_achieved:
+                            vel_achieved_count += 1
+                    
+                    # Overall validation success
+                    validation_success = pos_achieved and vel_achieved
+                    if validation_success:
+                        successful_runs += 1
+                        print(f"✅ Overall validation SUCCESS for sample {i+1}")
+                    else:
+                        print(f"❌ Overall validation FAILED for sample {i+1}")
+                    
+                    # Add validation-specific metrics to results
+                    validation_results = {
+                        'pos_error': pos_error,
+                        'vel_error': vel_error,
+                        'pos_achieved': pos_achieved,
+                        'vel_achieved': vel_achieved,
+                        'validation_success': validation_success,
+                    }
+                    
+                    # Save all data to HDF5 (both trajectory data and validation results)
+                    validation_grp = f.create_group(f'validation_{run_id}')
+                    
+                    # Save all trajectory results from collect_single_trajectory
+                    for key, value in results.items():
+                        if value is not None:
+                            validation_grp.create_dataset(key, data=value)
+                    
+                    # Save validation-specific results
+                    for key, value in validation_results.items():
+                        if value is not None:
+                            validation_grp.create_dataset(key, data=value)
+                    
+                    print(f"💾 Saved complete validation data for sample {i+1}")
+                    
+                    if pos_error is not None and vel_error is not None:
+                        print(f"   Position error: {pos_error:.4f} m")
+                        print(f"   Velocity error: {vel_error:.4f} m/s")
+                
+                else:
+                    print(f"❌ Execution failed for sample {i+1}")
+                    
+                    # Save failure record with minimal info
+                    validation_grp = f.create_group(f'validation_{run_id}')
+                    validation_grp.create_dataset('p_f_des', data=p_f_des)
+                    validation_grp.create_dataset('v_f_des', data=v_f_des)
+                    validation_grp.create_dataset('validation_success', data=False)
+                    validation_grp.create_dataset('pos_achieved', data=False)
+                    validation_grp.create_dataset('vel_achieved', data=False)
+                
+                # Ask if user wants to continue after each sample
+                # if i < len(samples) - 1:  # If not the last sample
+                #     try:
+                #         choice = input("\nContinue to next sample? [y/n]: ").lower().strip()
+                #         if choice != 'y':
+                #             print("Validation interrupted by user.")
+                #             break
+                #     except KeyboardInterrupt:
+                #         print("\nValidation interrupted by keyboard interrupt.")
+                #         break
+                
+                # Safety pause between runs
+                time.sleep(1.0)
+            
+            # Save final summary
+            summary = f.create_group('summary')
+            summary.create_dataset('total_samples', data=len(samples))
+            summary.create_dataset('completed_samples', data=i+1)
+            summary.create_dataset('successful_runs', data=successful_runs)
+            summary.create_dataset('pos_achieved_count', data=pos_achieved_count)
+            summary.create_dataset('vel_achieved_count', data=vel_achieved_count)
+            summary.create_dataset('success_rate', data=successful_runs/(i+1) if i >= 0 else 0)
+            summary.create_dataset('pos_achievement_rate', data=pos_achieved_count/(i+1) if i >= 0 else 0)
+            summary.create_dataset('vel_achievement_rate', data=vel_achieved_count/(i+1) if i >= 0 else 0)
+    
+    # Generate validation report
+    generate_validation_report(validation_hdf5, validation_dir)
+    
+    print(f"\n🎉 BRS Validation complete!")
+    print(f"Successful validations: {successful_runs}/{i+1}")
+    print(f"Position goals achieved: {pos_achieved_count}/{i+1}")
+    print(f"Velocity goals achieved: {vel_achieved_count}/{i+1}")
+    print(f"Overall success rate: {successful_runs/(i+1)*100:.1f}%" if i >= 0 else "No samples processed")
+    print(f"Results saved to: {validation_hdf5}")
+    print(f"Report saved to: {os.path.join(validation_dir, 'validation_report.md')}")
+
+
+def select_brs_sample_file():
+    """Select a BRS sample file for validation - simplified version"""
+    print("\nSelecting BRS sample file for validation...")
+    
+    # Look for hardware data collection sessions
+    results_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'results')
+    if not os.path.exists(results_dir):
+        print("No results directory found.")
+        return None
+    
+    # Find hardware data directories
+    hw_dirs = [d for d in os.listdir(results_dir) if d.startswith('hardware_data_')]
+    if not hw_dirs:
+        print("No hardware data sessions found.")
+        return None
+    
+    hw_dirs.sort(reverse=True)  # Most recent first
+    
+    print("\nAvailable hardware data sessions:")
+    for i, dirname in enumerate(hw_dirs):
+        dir_path = os.path.join(results_dir, dirname)
+        brs_file = os.path.join(dir_path, 'brs_samples.h5')
+        status = "✅ has brs_samples.h5" if os.path.exists(brs_file) else "❌ no brs_samples.h5"
+        print(f"{i+1}. {dirname} - {status}")
+    
+    try:
+        choice = int(input(f"\nSelect session (1-{len(hw_dirs)}): ")) - 1
+        if 0 <= choice < len(hw_dirs):
+            selected_dir = os.path.join(results_dir, hw_dirs[choice])
+            brs_file = os.path.join(selected_dir, 'brs_samples.h5')
+            
+            if os.path.exists(brs_file):
+                print(f"Selected: {brs_file}")
+                return brs_file
+            else:
+                print("No brs_samples.h5 found in selected session.")
+                return None
+        else:
+            print("Invalid selection.")
+            return None
+    except ValueError:
+        print("Invalid input. Please enter a number.")
+        return None
+
+def load_brs_samples(brs_file):
+    """Load BRS samples from HDF5 file"""
+    try:
+        samples = []
+        goal_set = []
+        with h5py.File(brs_file, 'r') as f:
+            # Check if file has the expected structure
+            if 'goal_set' in f:
+                lb = f['goal_set']['lb'][()]
+                ub = f['goal_set']['ub'][()]
+                goal_set = np.array([lb, ub]).squeeze()
+                print(f"Loaded goal set with bounds: \n{goal_set}")
+            else:
+                print("No goal set found.")
+
+            validation_groups = [k for k in f.keys() if k.startswith('validation_')]
+
+            if validation_groups:
+                # New format with validation_XXX groups
+                print(f"Loading {len(validation_groups)} samples from validation groups")
+                for group_name in validation_groups:
+                    group = f[group_name]
+                    if 'p_f_des' in group and 'v_f_des' in group:
+                        p_f_des = group['p_f_des'][()]
+                        v_f_des = group['v_f_des'][()]
+                        samples.append((p_f_des, v_f_des))
+            elif 'all_samples' in f:
+                # Old format with single all_samples dataset
+                print("Loading samples from 'all_samples' dataset")
+                all_samples = f['all_samples'][()]
+                for i in range(len(all_samples)):
+                    # Convert samples into the required format
+                    p_f_des = np.array([all_samples[i,0], all_samples[i,1], 0.1])
+                    v_f_des = np.array([0, 0, all_samples[i,2]])
+                    samples.append((p_f_des, v_f_des))
+            else:
+                # Try to find any groups that might contain samples
+                for group_name in f.keys():
+                    if isinstance(f[group_name], h5py.Group):
+                        group = f[group_name]
+                        if 'state' in group:
+                            sample = group['state'][()]
+                            p_f_des = np.array([sample[0], sample[1], 0.1]).flatten()
+                            v_f_des = np.array([0, 0, sample[2]]).flatten()
+                            samples.append((p_f_des, v_f_des))
+            
+            # Limit number of samples if needed
+            max_samples = 10  # Maximum number of samples to validate
+            if len(samples) > max_samples:
+                print(f"Found {len(samples)} samples, limiting to first {max_samples} for validation")
+                samples = samples[:max_samples]
+            
+            return samples, goal_set
+    except Exception as e:
+        print(f"Error loading BRS samples: {e}")
+        traceback.print_exc()
+        return None
+
+def generate_validation_report(validation_hdf5, validation_dir):
+    """Generate a validation report in Markdown format"""
+    try:
+        report_path = os.path.join(validation_dir, 'validation_report.md')
+        
+        with h5py.File(validation_hdf5, 'r') as f:
+            # Extract summary data
+            total_samples = f['summary/total_samples'][()]
+            completed_samples = f['summary/completed_samples'][()]
+            successful_runs = f['summary/successful_runs'][()]
+            success_rate = f['summary/success_rate'][()]
+            
+            # Extract validation data
+            validation_results = []
+            for i in range(completed_samples):
+                run_id = str(i).zfill(len(str(total_samples)))
+                group_name = f'validation_{run_id}'
+                
+                if group_name in f:
+                    group = f[group_name]
+                    result = {
+                        'sample_id': i,
+                        'p_f_des': group['p_f_des'][()] if 'p_f_des' in group else None,
+                        'v_f_des': group['v_f_des'][()] if 'v_f_des' in group else None,
+                        'impact_pos': group['impact_pos'][()] if 'impact_pos' in group else None,
+                        'impact_vel': group['impact_vel'][()] if 'impact_vel' in group else None,
+                        'pos_error': group['pos_error'][()] if 'pos_error' in group else None,
+                        'vel_error': group['vel_error'][()] if 'vel_error' in group else None,
+                        'success': group['validation_success'][()] if 'validation_success' in group else False
+                    }
+                    validation_results.append(result)
+        
+        # Generate Markdown report
+        with open(report_path, 'w') as report:
+            # Title and summary
+            date_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            report.write(f"# BRS Validation Report\n\n")
+            report.write(f"**Generated:** {date_str}\n\n")
+            
+            # Summary section
+            report.write("## Summary\n\n")
+            report.write(f"- **Total Samples:** {total_samples}\n")
+            report.write(f"- **Completed Samples:** {completed_samples}\n")
+            report.write(f"- **Successful Validations:** {successful_runs}\n")
+            report.write(f"- **Success Rate:** {success_rate*100:.1f}%\n\n")
+            
+            # Results table
+            report.write("## Validation Results\n\n")
+            report.write("| Sample | Target Position | Target Velocity | Actual Position | Actual Velocity | Position Error | Velocity Error | Success |\n")
+            report.write("|--------|----------------|----------------|----------------|----------------|---------------|---------------|--------|\n")
+            
+            for result in validation_results:
+                p_f_des = result['p_f_des']
+                v_f_des = result['v_f_des']
+                impact_pos = result['impact_pos']
+                impact_vel = result['impact_vel']
+                pos_error = result['pos_error']
+                vel_error = result['vel_error']
+                success = result['success']
+                
+                p_f_des_str = f"[{p_f_des[0]:.3f}, {p_f_des[1]:.3f}, {p_f_des[2]:.3f}]" if p_f_des is not None else "N/A"
+                v_f_des_str = f"[{v_f_des[0]:.3f}, {v_f_des[1]:.3f}, {v_f_des[2]:.3f}]" if v_f_des is not None else "N/A"
+                impact_pos_str = f"[{impact_pos[0]:.3f}, {impact_pos[1]:.3f}, {impact_pos[2]:.3f}]" if impact_pos is not None else "N/A"
+                impact_vel_str = f"[{impact_vel[0]:.3f}, {impact_vel[1]:.3f}, {impact_vel[2]:.3f}]" if impact_vel is not None else "N/A"
+                pos_error_str = f"{pos_error:.3f} m" if pos_error is not None else "N/A"
+                vel_error_str = f"{vel_error:.3f} m/s" if vel_error is not None else "N/A"
+                success_str = "✅" if success else "❌"
+                
+                report.write(f"| {result['sample_id']} | {p_f_des_str} | {v_f_des_str} | {impact_pos_str} | {impact_vel_str} | {pos_error_str} | {vel_error_str} | {success_str} |\n")
+            
+            # Error Analysis
+            report.write("\n## Error Analysis\n\n")
+            
+            # Calculate statistics for position and velocity errors
+            pos_errors = [r['pos_error'] for r in validation_results if r['pos_error'] is not None]
+            vel_errors = [r['vel_error'] for r in validation_results if r['vel_error'] is not None]
+            
+            if pos_errors:
+                avg_pos_error = sum(pos_errors) / len(pos_errors)
+                max_pos_error = max(pos_errors)
+                min_pos_error = min(pos_errors)
+                report.write(f"### Position Error Statistics\n\n")
+                report.write(f"- **Average Position Error:** {avg_pos_error:.3f} m\n")
+                report.write(f"- **Maximum Position Error:** {max_pos_error:.3f} m\n")
+                report.write(f"- **Minimum Position Error:** {min_pos_error:.3f} m\n\n")
+            
+            if vel_errors:
+                avg_vel_error = sum(vel_errors) / len(vel_errors)
+                max_vel_error = max(vel_errors)
+                min_vel_error = min(vel_errors)
+                report.write(f"### Velocity Error Statistics\n\n")
+                report.write(f"- **Average Velocity Error:** {avg_vel_error:.3f} m/s\n")
+                report.write(f"- **Maximum Velocity Error:** {max_vel_error:.3f} m/s\n")
+                report.write(f"- **Minimum Velocity Error:** {min_vel_error:.3f} m/s\n\n")
+            
+            # Conclusion
+            report.write("## Conclusion\n\n")
+            if successful_runs / completed_samples > 0.8:
+                report.write("The BRS validation shows excellent accuracy, with most samples executing successfully. ")
+                report.write("The controller achieves reliable tracking of target position and velocity at impact.\n\n")
+            elif successful_runs / completed_samples > 0.5:
+                report.write("The BRS validation shows good performance, with the majority of samples executing successfully. ")
+                report.write("Some improvements may be needed to enhance the controller's accuracy.\n\n")
+            else:
+                report.write("The BRS validation indicates performance issues, with a significant number of samples failing. ")
+                report.write("Further investigation and controller tuning are recommended.\n\n")
+
+        print(f"Validation report generated: {report_path}")
+        
+    except Exception as e:
+        print(f"Error generating validation report: {e}")
+        traceback.print_exc()
+
 def main():
     """Main data collection function"""
     # Setup arguments
@@ -420,8 +882,14 @@ def main():
     print("1. Resume existing collection (r)")
     print("2. Start new collection (n)")
     print("3. Rerun single trajectory (o)")
+    print("4. Run BRS validation (v)")
     
-    mode_choice = input("Choose mode [r/n/o]: ").lower().strip()
+    mode_choice = input("Choose mode [r/n/o/v]: ").lower().strip()
+    
+    if mode_choice == 'v':
+        # Call validation module
+        validate_brs_samples()
+        return
     
     if mode_choice == 'o':
         # Single trajectory rerun mode
