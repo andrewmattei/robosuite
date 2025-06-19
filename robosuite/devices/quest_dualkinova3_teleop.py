@@ -307,7 +307,7 @@ class QuestDualKinova3Teleop(Device):
                         print("Initials")
                         print(f"DEBUG get_controller_state(): d_hand_pos vs quest_init_pos: {d_hand_posit} {self.quest_init_pos[controller]}")
                         # print(f"DEBUG get_controller_state(): d_hand_rpy: {d_hand_rpy}")
-                        print(f"DEBUG get_controller_state(): eR2 vs eR2_controller vs eR2_ee: \n{eR2} \n{eR2_controller} \n {eR2_ee}")
+                        # print(f"DEBUG get_controller_state(): eR2 vs eR2_controller vs eR2_ee: \n{eR2} \n{eR2_controller} \n {eR2_ee}")
                         # print(f"DEBUG get_controller_state(): quest_curr_rpy vs quest_init_rpy: {quest_curr_rpy} {self.quest_init_rpy[controller]}")
                     d_hand_rs_frame = self.R_rs_questwd @ d_hand_posit # I would hope that this turns it from the quest's frame to the robot's frame?
 

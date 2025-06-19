@@ -484,7 +484,8 @@ class OperationalSpaceController(Controller):
         # Note: Gamma_null = desired nullspace pose torques, assumed to be positional joint control relative
         #                     to the initial joint positions
         self.torques += nullspace_torques(
-            self.mass_matrix, nullspace_matrix, self.initial_joint, self.joint_pos, self.joint_vel
+            self.mass_matrix, nullspace_matrix, self.initial_joint, self.joint_pos, self.joint_vel,
+            joint_kp=20
         )
 
         # Always run superclass call for any cleanups at the end
