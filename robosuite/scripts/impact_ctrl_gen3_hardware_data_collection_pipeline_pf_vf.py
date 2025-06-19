@@ -746,7 +746,7 @@ def load_brs_samples(brs_file):
                             samples.append((p_f_des, v_f_des))
             
             # Limit number of samples if needed
-            max_samples = 10  # Maximum number of samples to validate
+            max_samples = 1000  # Maximum number of samples to validate
             if len(samples) > max_samples:
                 print(f"Found {len(samples)} samples, limiting to first {max_samples} for validation")
                 samples = samples[:max_samples]

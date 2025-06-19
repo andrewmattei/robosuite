@@ -1234,13 +1234,19 @@ class Kinova3ContactControl(ManipulationEnv):
         # Create figure with 7 subplots
         fig, axes = plt.subplots(4, 1, figsize=(10, 8), sharex=True)
 
-        # 1) End-effector position error norm
+        # 1) End-effector position error components
         pos_interp = np.vstack([
             np.interp(t, T_opt, ee_pos_o[:,i]) for i in range(3)
         ]).T
-        err = np.linalg.norm(ee_pos - pos_interp, axis=1)
-        axes[0].plot(t, err, color=colors['actual'], label='EE pos error', linewidth=2)
-        axes[0].set_ylabel('Error (m)')
+        pos_err_components = ee_pos - pos_interp
+        # Plot individual x, y, z error components
+        axes[0].plot(t, pos_err_components[:, 0], color=colors['joint1'], 
+                    label='X error', linewidth=2)
+        axes[0].plot(t, pos_err_components[:, 1], color=colors['joint2'], 
+                    label='Y error', linewidth=2)
+        axes[0].plot(t, pos_err_components[:, 2], color=colors['joint3'], 
+                    label='Z error', linewidth=2)
+        axes[0].set_ylabel('Position Error (m)')
         axes[0].legend()
         axes[0].grid(True, alpha=0.3)
 

@@ -356,8 +356,8 @@ class Kinova3HardwareController:
         state_dim = Z_opt.shape[0]
         control_dim = U_opt.shape[0]
         Q = np.eye(state_dim)
-        Q[:control_dim, :control_dim] *= 5e6
-        Q[control_dim:, control_dim:] *= 1e3
+        Q[:control_dim, :control_dim] *= 6e6
+        Q[control_dim:, control_dim:] *= 6e3
         R = np.eye(control_dim) * 1e-5
 
         # Backward Riccati recursion
@@ -720,6 +720,8 @@ class Kinova3HardwareController:
             H_base_ee = self.get_ee_pose_in_base(q_curr)
             ee_pos[:] = H_base_ee[:3, 3]
             ee_vel[:] = self.get_ee_velocity_in_base(q_curr, dq_curr)
+
+            
             
             tau_meas = self.torque_lowpass.filter(tb.get_realtime_torque(self.base_feedback))
 
@@ -861,7 +863,10 @@ class Kinova3HardwareController:
         return True
 
     def run_pid_jogging(self, q_desired, sampling_time=0.001, max_time=10.0):
-        """Run PID jogging to desired joint positions with optimized timing"""
+        """Run PID jogging to desired joint positions with optimized timing
+        Q_desired in radians, sampling_time in seconds
+        """
+
         self.cyclic_running = True
         self.init_jogging = True
         print(f"Starting PID jogging to target position")
@@ -934,9 +939,9 @@ class Kinova3HardwareController:
                 pass
 
             # Check exit conditions
-            if not self.init_jogging:
-                print("Target position reached")
-                break
+            # if not self.init_jogging:
+            #     print("Target position reached")
+            #     break
             if control_time > max_time:
                 print("Jogging timeout reached")
                 break
@@ -964,9 +969,9 @@ class Kinova3HardwareController:
             'actual': '#7f7f7f',    # gray
             'desired': '#bcbd22',   # olive
             'impact': '#9467bd',    # purple
-            'target': '#8c564b',    # brown
+            'target': "#885449",    # brown
             'joint1': '#1f77b4',    # bright blue
-            'joint2': '#ff7f0e',    # bright orange
+            'joint2': "#af5200",    # bright orange
             'joint3': '#2ca02c',    # bright green
             'joint4': '#d62728',    # bright red
             'joint5': '#9467bd',    # purple
@@ -980,23 +985,34 @@ class Kinova3HardwareController:
         else:
             fig, axes = plt.subplots(4, 1, figsize=(12, 10), sharex=True)
 
-        # End-effector position error
+        # End-effector position error components
         if T_opt is not None and ee_pos_opt is not None:
             pos_interp = np.vstack([
                 np.interp(times, T_opt, ee_pos_opt[:, i]) for i in range(3)
             ]).T
-            err = np.linalg.norm(ee_pos - pos_interp, axis=1)
-            axes[0].plot(times, err, color=colors['actual'], label='EE pos error', linewidth=2)
+            pos_err_components = ee_pos - pos_interp
+            # Plot individual x, y, z error components
+            axes[0].plot(times, pos_err_components[:, 0], color=colors['joint1'], 
+                        label='X error', linewidth=2)
+            axes[0].plot(times, pos_err_components[:, 1], color=colors['joint2'], 
+                        label='Y error', linewidth=2)
+            axes[0].plot(times, pos_err_components[:, 2], color=colors['joint3'], 
+                        label='Z error', linewidth=2)
         else:
-            axes[0].plot(times, np.linalg.norm(ee_pos, axis=1), color=colors['actual'], 
-                        label='EE position magnitude', linewidth=2)
+            # Plot individual x, y, z position components
+            axes[0].plot(times, ee_pos[:, 0], color=colors['joint1'], 
+                        label='X position', linewidth=2)
+            axes[0].plot(times, ee_pos[:, 1], color=colors['joint2'], 
+                        label='Y position', linewidth=2)
+            axes[0].plot(times, ee_pos[:, 2], color=colors['joint3'], 
+                        label='Z position', linewidth=2)
         
         # Add impact time vertical line to pose error plot
         if hasattr(self, 'impact_time') and self.impact_time is not None:
             axes[0].axvline(x=self.impact_time, color=colors['impact'], 
                         linestyle='--', label='Actual Impact')
         
-        axes[0].set_ylabel('Error/Position (m)')
+        axes[0].set_ylabel('Position Error/Position (m)')
         axes[0].legend()
         axes[0].grid(True, alpha=0.3)
 
@@ -1166,7 +1182,7 @@ def main():
         # Target pose and velocity
         # p_ee_to_ball_buttom = 0.05 + 0.025 + 0.2
         p_ee_to_ball_buttom = 0.081
-        p_f = np.array([0.6, -0.05, p_ee_to_ball_buttom])    # meters
+        p_f = np.array([0.5, -0.05, p_ee_to_ball_buttom])    # meters
         v_f = np.array([0, 0, -0.5])   # m/s
         v_p_mag = np.linalg.norm(v_f)+0.5
 
@@ -1194,7 +1210,7 @@ def main():
 
         # Generate trajectory
         T = 1.0  # seconds
-        N = 150  # number of points
+        N = 200  # number of points
         dt = T / (N)  # time step
         traj = opt.back_propagate_traj_using_manip_ellipsoid(
             v_f, q_sol, gen3.fk_fun, gen3.jac_fun, N=N, dt=dt, v_p_mag=v_p_mag
@@ -1230,18 +1246,19 @@ def main():
         # Initialize low-level control
         ########################
         try:
-            # # Option 1: Run PID jogging to target position
+            ################## Option 1: Run PID jogging to target position
+            # currently this is gravity compensation test
             # success = gen3.init_low_level_control(
             #     sampling_time=0.001, t_end=30, 
-            #     target_func=lambda dt: gen3.run_pid_jogging(Z_opt[:7, 0], dt, max_time=30.0)
+            #     target_func=lambda dt: gen3.run_pid_jogging(q_init, dt, max_time=30.0)
             # )
-
-            # TODO: tomorrow, debug the LQR controller and trajectory execution
             
-            # Option 2: Execute trajectory
-            q_start_360 = tb.to_kinova_joints(Z_opt[:7, 0])
+            ################## Option 2: Execute trajectory
 
-            joint_speed = None  # degrees per second
+            q_start = tb.get_q_start_from_Z(Z_opt)
+            q_start_360 = tb.to_kinova_joints(q_start)
+
+            joint_speed = None  # degrees per second # doesn't work rn
             gen3.action_aborted = False
             result = tb.move_joints(gen3.base, q_start_360, 
                                     joint_speed,
@@ -1257,6 +1274,8 @@ def main():
                 sampling_time=0.001, t_end=60,
                 target_func=lambda dt: gen3.run_trajectory_execution(T_opt, U_opt, Z_opt, dt)
             )
+
+            #########################
 
             if success:
                 print("Control initialized successfully. Running...")

@@ -289,7 +289,7 @@ def get_joint_angles(base):
     return joint_angles
 
 
-def get_realtime_ee_p_v(base_feedback):
+def get_realtime_ee_pos_vel(base_feedback):
     # this will get the end effector position and velocity in the base frame
     ee_pos = np.array([base_feedback.base.tool_pose_x,
                        base_feedback.base.tool_pose_y,
@@ -551,6 +551,17 @@ def move_end_effector_vel(base, pos_diff, ER,
         w = w_temp
     
     return stopping, v, w
+
+
+def get_q_start_from_Z(Z, gamma=0.0):
+    """
+    Kinova move joints have error. 
+    If move to Z[:7,0], the actuall pose might be between Z[:7,0] and Z[:7,1].
+    This can cause the LQR tracker to oscillate as it will try to first go backwards to Z[:7,0] and then forwards to Z[:7,1].
+    This function will find a a starting joint angle that is gamma * (Z[:7,N/2] - Z[:7,0]) behind Z[:7,0].
+    """
+    N = Z.shape[1]
+    return Z[:7,0] - gamma * (Z[:7,N//2] - Z[:7,0])
 
 
 def to_kinova_joints(joints_rad_pi):
