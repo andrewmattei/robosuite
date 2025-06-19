@@ -289,17 +289,6 @@ def get_joint_angles(base):
     return joint_angles
 
 
-def get_realtime_ee_pos_vel(base_feedback):
-    # this will get the end effector position and velocity in the base frame
-    ee_pos = np.array([base_feedback.base.tool_pose_x,
-                       base_feedback.base.tool_pose_y,
-                       base_feedback.base.tool_pose_z])
-    ee_vel = np.array([base_feedback.base.tool_twist_linear_x,
-                       base_feedback.base.tool_twist_linear_y,
-                       base_feedback.base.tool_twist_linear_z])
-    return ee_pos, ee_vel
-
-
 def get_realtime_q_qdot(base_feedback):
     # this is for low-level control
     # will convert from degrees to radians then wrapped to [-pi, pi]
@@ -553,29 +542,7 @@ def move_end_effector_vel(base, pos_diff, ER,
     return stopping, v, w
 
 
-def get_q_start_from_Z(Z, gamma=0.0):
-    """
-    Kinova move joints have error. 
-    If move to Z[:7,0], the actuall pose might be between Z[:7,0] and Z[:7,1].
-    This can cause the LQR tracker to oscillate as it will try to first go backwards to Z[:7,0] and then forwards to Z[:7,1].
-    This function will find a a starting joint angle that is gamma * (Z[:7,N/2] - Z[:7,0]) behind Z[:7,0].
-    """
-    N = Z.shape[1]
-    return Z[:7,0] - gamma * (Z[:7,N//2] - Z[:7,0])
-
-
-def to_kinova_joints(joints_rad_pi):
-    """
-    joints_rad_pi: a np array of joint angles in radians [-pi, pi]
-    Returns:
-    a np array of joint angles in degrees [0, 360]
-    """
-    joints_deg = np.degrees(joints_rad_pi)
-    joints_deg[joints_deg < 0] += 360  # wrap to [0, 360]
-    return joints_deg
-
-
-def move_joints(base, desired_joints, speed=None, local_check=check_for_end_or_abort):
+def move_joints(base, desired_joints):
     # move the joints to a desired position
     # desired_joints is a list of joint angles in degrees
     # joint 1 is the base joint, joint 7 is the end effector joint
@@ -584,10 +551,6 @@ def move_joints(base, desired_joints, speed=None, local_check=check_for_end_or_a
     action.name = "Joint Movement"
     action.application_data = ""
     TIMEOUT_DURATION = 10  # in seconds
-    if speed is not None:
-        constraint = action.reach_joint_angles.constraint
-        constraint.type = Base_pb2.JOINT_CONSTRAINT_SPEED
-        constraint.value = speed  # speed in degrees per second
 
     for joint_id in range(7):
         joint_angle = action.reach_joint_angles.joint_angles.joint_angles.add()
@@ -596,7 +559,7 @@ def move_joints(base, desired_joints, speed=None, local_check=check_for_end_or_a
 
     e = threading.Event()
     notification_handle = base.OnNotificationActionTopic(
-        local_check(e),
+        check_for_end_or_abort(e),
         Base_pb2.NotificationOptions()
     )
 
@@ -612,7 +575,6 @@ def move_joints(base, desired_joints, speed=None, local_check=check_for_end_or_a
     else:
         print("Timeout on action notification wait")
     return finished
-
 
 from concurrent.futures import TimeoutError
 def home_both_arms(left_base, right_base, action_name="Home"):

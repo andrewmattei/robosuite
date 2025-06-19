@@ -98,11 +98,13 @@ from robosuite import load_composite_controller_config
 from robosuite.controllers.composite.composite_controller import WholeBody
 from robosuite.wrappers import VisualizationWrapper
 
+import mujoco
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--environment", type=str, default="Lift")
-    parser.add_argument("--robots", nargs="+", type=str, default="Panda", help="Which robot(s) to use in the env")
+    parser.add_argument("--robots", nargs="+", type=str, default="Kinova3", help="Which robot(s) to use in the env")
     parser.add_argument(
         "--config", type=str, default="default", help="Specified environment configuration if necessary"
     )
@@ -115,7 +117,7 @@ if __name__ == "__main__":
         default=None,
         help="Choice of controller. Can be generic (eg. 'BASIC' or 'WHOLE_BODY_MINK_IK') or json file (see robosuite/controllers/config for examples) or None to get the robot's default controller if it exists",
     )
-    parser.add_argument("--device", type=str, default="keyboard")
+    parser.add_argument("--device", type=str, default="quest")
     parser.add_argument("--pos-sensitivity", type=float, default=1.0, help="How much to scale position user inputs")
     parser.add_argument("--rot-sensitivity", type=float, default=1.0, help="How much to scale rotation user inputs")
     parser.add_argument(
@@ -150,7 +152,7 @@ if __name__ == "__main__":
         **config,
         has_renderer=True,
         has_offscreen_renderer=False,
-        render_camera="agentview",
+        render_camera="frontview",
         ignore_done=True,
         use_camera_obs=False,
         reward_shaping=True,
@@ -178,6 +180,10 @@ if __name__ == "__main__":
         from robosuite.devices.mjgui import MJGUI
 
         device = MJGUI(env=env)
+    elif args.device == "quest":
+        from robosuite.devices.quest import Quest
+
+        device = Quest(env=env,debug=True)
     else:
         raise Exception("Invalid device choice: choose either 'keyboard' or 'spacemouse'.")
 
@@ -204,7 +210,6 @@ if __name__ == "__main__":
             for robot in env.robots
         ]
 
-        # Loop until we get a reset from the input or the task completes
         while True:
             start = time.time()
 
@@ -213,6 +218,7 @@ if __name__ == "__main__":
 
             # Get the newest action
             input_ac_dict = device.input2action()
+            # this sends our actions to the sim using the dictionary returned by input2action
 
             # If action is none, then this a reset so we should break
             if input_ac_dict is None:

@@ -14,7 +14,6 @@ uv pip install -e .
 ```
 to make import user created module possible.
 
-
 Then to include Pinocchio - Casadi implementation, please follow the robotpkg install steps in the "Linux" tab of the [official guide](https://stack-of-tasks.github.io/pinocchio/download.html).
 Note that Pinocchio will be installed in system, if your `.bashrc` has ros2 sourced, it might incurr error.
 

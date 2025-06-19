@@ -1,5 +1,7 @@
 from .device import Device
 from .keyboard import Keyboard
+from .quest import Quest
+from .quest_dualkinova3_teleop import QuestDualKinova3Teleop
 
 try:
     from .spacemouse import SpaceMouse

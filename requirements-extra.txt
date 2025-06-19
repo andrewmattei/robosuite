@@ -32,7 +32,7 @@ usd-core
 imageio[ffmpeg]
 imageio[pyav]
 
-#for plotting
+# for plotting
 matplotlib
 
 # for ipykernel

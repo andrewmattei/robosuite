@@ -129,3 +129,5 @@ robosuite/models/assets/demonstrations_private
 
 # result files from simulation data collection
 robosuite/results/
+
+robosuite/devices/oculus_reader

@@ -53,7 +53,7 @@ class Bounce(ManipulationEnv):
         # settings for table top
         self.table_full_size = table_full_size
         self.table_friction = table_friction
-        self.table_offset = np.array((0, 0, 0.7))  # made changes
+        self.table_offset = np.array((0, 0, 0.4))  # made changes
 
         # Omron LD-60 Mobile Base setting
         self.init_torso_height = 0.342
@@ -225,6 +225,8 @@ class Bounce(ManipulationEnv):
         """
         Resets simulation internal configurations.
         """
+        super()._reset_internal()
+        
         # set the mobilebase joint torso height if it exists
         self.deterministic_reset = True
         active_robot = self.robots[0]
@@ -253,7 +255,6 @@ class Bounce(ManipulationEnv):
                 obj_quat = np.array([1,0,0,0]) # remove the randomness in the orientation of the ball
                 self.sim.data.set_joint_qpos(obj.joints[0], np.concatenate([np.array(obj_pos), np.array(obj_quat)]))
 
-        super()._reset_internal()
 
 
     def _apply_gravity_compensation(self):
@@ -306,7 +307,7 @@ class TimeKeeper:
 
 if __name__ == "__main__":
 
-    simulation_time = 3.0 # seconds
+    simulation_time = 10.0 # seconds
     env_step_size = 0.0001 # seconds
     horizon = int(simulation_time / env_step_size)
     # Create environment

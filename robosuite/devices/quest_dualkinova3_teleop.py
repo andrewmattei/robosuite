@@ -20,11 +20,7 @@ import robosuite.utils.tool_box_no_ros as tb
 # 'Rotation': {'x': -0.07060858607292175, 'y': -0.5715464949607849, 'z': 0.6635912656784058, 'w': 0.4774887263774872}}}
 
 class QuestDualKinova3Teleop(Device):
-    def __init__(
-            self,
-            env=None,
-            debug=False,
-        ):
+    def __init__(self, env=None, debug=False, mirror_actions=True):
         super().__init__(env)
         
         # Check robot models and see if there are multiple arms
@@ -47,10 +43,23 @@ class QuestDualKinova3Teleop(Device):
         self._reset_state = 0
 
         self._controller_names = ["LeftController", "RightController"]
-        self._arm2controller = {
-            "left": "LeftController",
-            "right": "RightController",
+        self.mirror_actions = mirror_actions
+        if self.mirror_actions:
+            self._arm2controller = {
+                "right": "LeftController",
+                "left": "RightController",
+            }
+        else:
+            self._arm2controller = {
+                "left": "LeftController",
+                "right": "RightController",
+            }
+        
+        self._controller2trigger = {
+            "LeftController": 0,
+            "RightController": 1,
         }
+       
         self._button_names = {
             "LeftController": {
                 "trigger_val": "TriggerValue",
@@ -89,13 +98,10 @@ class QuestDualKinova3Teleop(Device):
         self.ee_init_rpy = dict([(name, np.zeros(3)) for name in self._controller_names])
 
         # Golden offset for Grey Robot with Quest 3 # TODO(VS) why?
-        self.R_rs_questwd = np.array([
-            [1, 0, 0],
-            [0, 1, 0],
-            [0, 0, 1]
-        ])
+        self.R_rs_questwd = None
 
         self.debug = debug
+        self.stop_event = threading.Event()  # <-- Add stop event
 
         # Set controller offset from robot base frame.
         self.approx_R_rs_questwd()
@@ -127,8 +133,8 @@ class QuestDualKinova3Teleop(Device):
 
     def _reset_internal_state(self):
         super()._reset_internal_state()
-
-        self.rotation = np.array([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]])
+        self.grasp_states = [[0] * len(self.all_robot_arms[i]) for i in range(self.num_robots)]
+        self.rotation = np.eye(3)  # rotation matrix
         self.raw_drotation = np.zeros(3)  # immediate roll, pitch, yaw delta values from keyboard hits
         self.last_drotation = np.zeros(3)
         self.pos = np.zeros(3)  # (x, y, z)
@@ -185,10 +191,14 @@ class QuestDualKinova3Teleop(Device):
             quest_data = self.oculus_reader.get_controller_inputs()
             # print(quest_data)
             # When not in operation, no data will be generated so wait for the datastream
-            while quest_data == None:  
+            while quest_data == None and not self.stop_event.is_set():  
                 time.sleep(0.001)
                 quest_data = self.oculus_reader.get_controller_inputs()
                 # print(quest_data)
+
+            # If stop event is set, return None so upstream code can break out.
+            if self.stop_event.is_set():
+                return None
 
             # Parse data per controller.
             for controller in quest_data:
@@ -214,13 +224,16 @@ class QuestDualKinova3Teleop(Device):
                     # self.pos_delta = [0, 0, 0]
 
                 # Grip, used for gripper control
-                if controller_state[self._button_names[controller]["grip_bool"]]:
-                    if controller_state[self._button_names[controller]["grip_val"]] > 0.3:
+                trigger_idx = self._controller2trigger[controller]
+                # if controller_state[self._button_names[controller]["grip_bool"]]:
+                    # if controller_state[self._button_names[controller]["grip_val"]] > 0.1:
                         # if self.debug:
                             # print(f"DEBUG get_controller_state(): grip_val: {controller_state[self._button_names[controller]["grip_val"]]}")
                             # print(f"DEBUG get_controller_state(): grasp_state: {self.grasp_states[self.active_robot][self.active_arm_index]}")
                             # print(controller_state[self._button_names[controller]["grip_val"]])
-                        self.grasp_states[self.active_robot][self.active_arm_index] = not self.grasp_states[self.active_robot][self.active_arm_index] 
+                self.grasp_states[self.active_robot][trigger_idx] = controller_state[self._button_names[controller]["grip_val"]]
+                # print(f'grip_val: {controller_state[self._button_names[controller]["grip_val"]]}')
+                # print(f'grasp_states: {self.grasp_states}')
 
                 if controller_state[self._button_names[controller]["reset_bool"]]:
                     self._reset_state = 1
@@ -229,7 +242,7 @@ class QuestDualKinova3Teleop(Device):
                         dpos=np.zeros(3),
                         rotation=np.array([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]]),
                         raw_drotation=np.array([0, 0, 0]),
-                        grasp=[-1],
+                        grasp=0,
                         reset=self._reset_state,
                         base_mode=int(self.base_mode),
                     )
@@ -294,7 +307,7 @@ class QuestDualKinova3Teleop(Device):
                         print("Initials")
                         print(f"DEBUG get_controller_state(): d_hand_pos vs quest_init_pos: {d_hand_posit} {self.quest_init_pos[controller]}")
                         # print(f"DEBUG get_controller_state(): d_hand_rpy: {d_hand_rpy}")
-                        print(f"DEBUG get_controller_state(): eR2 vs eR2_controller vs eR2_ee: \n{eR2} \n{eR2_controller} \n {eR2_ee}")
+                        # print(f"DEBUG get_controller_state(): eR2 vs eR2_controller vs eR2_ee: \n{eR2} \n{eR2_controller} \n {eR2_ee}")
                         # print(f"DEBUG get_controller_state(): quest_curr_rpy vs quest_init_rpy: {quest_curr_rpy} {self.quest_init_rpy[controller]}")
                     d_hand_rs_frame = self.R_rs_questwd @ d_hand_posit # I would hope that this turns it from the quest's frame to the robot's frame?
 
@@ -321,7 +334,7 @@ class QuestDualKinova3Teleop(Device):
                         rotation=quest_curr_rot,
                         raw_drotation=eR2,
                         # raw_drotation=np.zeros(3),
-                        grasp=int(self.grasp),
+                        grasp=self.grasp_states[self.active_robot][trigger_idx],
                         reset=self._reset_state,
                         base_mode=int(self.base_mode),
                     )
@@ -339,7 +352,7 @@ class QuestDualKinova3Teleop(Device):
                         dpos=np.zeros(3),
                         rotation=np.eye(3),
                         raw_drotation=np.zeros(3),
-                        grasp=int(self.grasp),
+                        grasp=self.grasp_states[self.active_robot][trigger_idx],
                         reset=self._reset_state,
                         base_mode=int(self.base_mode),
                     )
@@ -372,8 +385,8 @@ class QuestDualKinova3Teleop(Device):
         robot = self.env.robots[self.active_robot]
         # active_arm = self.active_arm
 
-        state = self.get_controller_state() # assume that both controllers have been updated
-        
+        state_ = self.get_controller_state() # assume that both controllers have been updated
+
         ac_dict = {}
         # populate delta actions for the arms
         for arm in robot.arms:
@@ -389,11 +402,11 @@ class QuestDualKinova3Teleop(Device):
             )
             #### ensure that the rotation is in the robotsuite frame (+x in front, +y to the left, +z up) in robot's perspective!!!
 
-            if mirror_actions:
-                dpos[0] *= -1
-                dpos[1] *= -1
-                raw_drotation[0] *= -1
-                raw_drotation[1] *= -1
+            # if mirror_actions:
+            #     dpos[0] *= -1
+            #     dpos[1] *= -1
+            #     raw_drotation[0] *= -1
+            #     raw_drotation[1] *= -1
 
             # If we're resetting, immediately return None
             if reset:
@@ -412,9 +425,9 @@ class QuestDualKinova3Teleop(Device):
             # Scale rotation for teleoperation (tuned for OSC) -- gains tuned for each device
             dpos, drotation = self._postprocess_device_outputs(dpos, drotation)
             arm_norm_delta = np.concatenate([dpos, drotation])
-            # map 0 to -1 (open) and map 1 to 1 (closed)
-            grasp = 1 if grasp else -1
-            
+            # map gripper value from [0,1] to [-1,1]
+            grasp = grasp * 1.6 - 0.8
+            # print(f"controller, grasp: {quest_hand}{grasp}")
             # If we're resetting, immediately return None
             if reset:
                 return None
@@ -427,7 +440,7 @@ class QuestDualKinova3Teleop(Device):
             )
             ac_dict[f"{arm}_abs"] = arm_action["abs"]
             ac_dict[f"{arm}_delta"] = arm_action["delta"]
-            ac_dict[f"{arm}_gripper"] = np.zeros(robot.gripper[arm].dof)
+            ac_dict[f"{arm}_gripper"] = np.array([grasp])
 
         ## TODO populate the base motion with the left hand joy stick motion
         # if robot.is_mobile:
@@ -486,28 +499,63 @@ class QuestDualKinova3Teleop(Device):
                     target_pose = current_pos
                     self.controller_state[controller_name] = dict(
                         dpos=[0,0,0],
-                        rotation=np.array([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]]),
+                        rotation=np.eye(3),
                         raw_drotation=np.array([0, 0, 0]),
-                        grasp=int(self.grasp),
+                        grasp=0,
                         reset=self._reset_state,
                         base_mode=int(self.base_mode),
                     )
                 # print(self.controller_state)
 
     def approx_R_rs_questwd(self):
-        # hard-coding the headset offset for now
+        """
+        quest / rs frame:
+        Left: +z, Up: +y, Back: +x.
+        04/06/2025, quest handset is facing the same direction as the robot's
+        """
+        # # hard-coding the headset offset for now
+        # self.R_rs_questwd = np.array([ # robot_T_headset
+        #     [0, 0, 1],
+        #     [1, 0, 0],
+        #     [0, 1, 0]
+        # ])
+        # the axis oddly swapped after an usage??
+        
         self.R_rs_questwd = np.array([ # robot_T_headset
+            [-1, 0, 0],
             [0, 0, 1],
-            [1, 0, 0],
             [0, 1, 0]
         ])
+        # self.R_rs_questwd = np.eye(3) # identity matrix for debug
         
         # rotate around z-axis for -90 degrees
-        self.R_rs_questRctrl = np.array([ # robot_T_right_controller
-            [0, -1, 0],
-            [1, 0, 0],
-            [0, 0, 1]
-        ])
+        if self.mirror_actions:
+            self.R_rs_questwd = np.array([ # robot_T_headset
+                [-1, 0, 0],
+                [0, 0, 1],
+                [0, 1, 0]
+            ])
+            self.R_rs_questRctrl = np.array([
+                [-1, 0, 0],
+                [0, -1, 0],
+                [0, 0, 1]
+            ])
+        else:
+            self.R_rs_questwd = np.array([ # robot_T_headset
+                [-1, 0, 0],
+                [0, 0, 1],
+                [0, 1, 0]
+            ])
+            self.R_rs_questRctrl = np.array([
+                [-1, 0, 0],
+                [0, -1, 0],
+                [0, 0, 1]
+            ])
+        # self.R_rs_questRctrl = np.eye(3) # identity matrix for debug
+
+    def stop(self):
+        """Call this to signal any running loops to terminate."""
+        self.stop_event.set()
 
     ### Keyboard callback functions
     # Probably dont work cause the thread is locked.
@@ -543,4 +591,3 @@ class QuestDualKinova3Teleop(Device):
     #     except AttributeError as e:
     #         pass
 
-    
