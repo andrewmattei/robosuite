@@ -7,6 +7,10 @@ import robosuite.utils.transform_utils as T
 from robosuite.controllers.parts.controller import Controller
 from robosuite.utils.control_utils import *
 
+from robosuite.demos.subproblems_casadi import IK_2R_2R_3R_numerical, kinova_path, get_elbow_angle_kinova, filter_and_select_closest_solution
+from robosuite.demos.sew_stereo import SEWStereo
+import robosuite.demos.optimizing_gen3_arm as opt
+
 # Supported impedance modes
 IMPEDANCE_MODES = {"fixed", "variable", "variable_kp"}
 
@@ -222,6 +226,24 @@ class OperationalSpaceControllerGeo(Controller):
         self.origin_pos = None
         self.origin_ori = None
 
+        # initialize ik-geo modules
+        self.EE_id = self.sim.model.body_name2id(self.naming_prefix+self.part_name+'_end_effector')
+        R_wd_ee = self.sim.data.body_xmat[self.EE_id].reshape(3, 3)
+        p_wd_ee = self.sim.data.body_xpos[self.EE_id]
+        R_wd_ref = self.ref_ori_mat
+        p_wd_ref = self.ref_pos
+        self.R_ref_ee = R_wd_ref.T @ R_wd_ee  # Rotation from reference to end effector
+        self.p_ref_ee = R_wd_ref.T @ (p_wd_ee - p_wd_ref)  # Position from reference to end effector
+
+        pin_model, _ = opt.load_kinova_model(kinova_path)
+        r, v = np.array([0, 0, -1]), np.array([0, 1, 0])
+        self.sew_stereo = SEWStereo(r, v)
+        self.model_transforms = opt.get_frame_transforms_from_pinocchio(pin_model)
+        self.elbow_angle = get_elbow_angle_kinova(self.initial_joint, pin_model, self.sew_stereo)
+        self.fk_fun, _,_,_,_,_ = opt.build_casadi_kinematics_dynamics(pin_model, 'tool_frame')
+        # print(f"Elbow angle: {self.elbow_angle}")
+
+
     def set_goal(self, action):
         """
         Sets goal based on input @action. If self.impedance_mode is not "fixed", then the input will be parsed into the
@@ -413,81 +435,66 @@ class OperationalSpaceControllerGeo(Controller):
         # Update state
         self.update()
 
-        desired_world_pos = None
-        # Only linear interpolator is currently supported
-        if self.interpolator_pos is not None:
-            # Linear case
-            if self.interpolator_pos.order == 1:
-                desired_world_pos = self.interpolator_pos.get_interpolated_goal()
-            else:
-                # Nonlinear case not currently supported
-                pass
+
+        # desired POSE in robot base frame
+        if self.input_ref_frame == "world":
+            p_des_0_ref = self.world_to_origin_frame(self.goal_pos)
+            R_des_0_ref = self.origin_ori.T @ self.goal_ori
+            p_des_0_ee = p_des_0_ref + R_des_0_ref @ self.p_ref_ee
+            R_des_0_ee = R_des_0_ref @ self.R_ref_ee
+        elif self.input_ref_frame == "base":
+            p_des_0_ref = self.goal_pos
+            R_des_0_ee = self.goal_ori
+            p_des_0_ee = p_des_0_ref + R_des_0_ref @ self.p_ref_ee
+            R_des_0_ee = R_des_0_ref @ self.R_ref_ee
         else:
-            if self.input_ref_frame == "base":
-                # compute goal based on current base position and orientation
-                desired_world_pos = self.origin_pos + np.dot(self.origin_ori, self.goal_pos)
-            elif self.input_ref_frame == "world":
-                desired_world_pos = self.goal_pos
+            raise ValueError(f"Unsupported input reference frame: {self.input_ref_frame}")
+
+        # Use IK_2R_2R_3R_numerical to compute desired joint angles
+        # Convert desired pose to homogeneous transformation matrix
+        R_0_7_desired = R_des_0_ee @ self.model_transforms['R'][-1]
+        p_0_T_desired = p_des_0_ee
+
+        pin_T_0_T = self.fk_fun(self.joint_pos).full()
+
+        # debug
+        print(pin_T_0_T)
+        print(f"Desired position: {p_des_0_ee}, Current EE position: {self.world_to_origin_frame(self.ref_pos)}")
+        print(f"Desired orientation: \n{R_des_0_ee}, \nCurrent EE orientation: \n{self.ref_ori_mat}")
+        # Call IK solver to get desired joint angles
+        try:
+            Q_solutions, is_LS_vec = IK_2R_2R_3R_numerical(
+                R_0_7_desired, p_0_T_desired, self.sew_stereo, self.elbow_angle, self.model_transforms
+            )
+            
+            # Select the closest solution to current joint configuration
+            if len(Q_solutions) > 0:
+                q_desired = filter_and_select_closest_solution(Q_solutions, is_LS_vec, self.joint_pos)
+                q_desired = q_desired[0]
             else:
-                raise ValueError
-
-        if self.interpolator_ori is not None:
-            # relative orientation based on difference between current ori and ref
-            self.relative_ori = orientation_error(self.ref_ori_mat, self.ori_ref)
-
-            ori_error = self.interpolator_ori.get_interpolated_goal()
-        else:
-            if self.input_ref_frame == "base":
-                # compute goal based on current base orientation
-                desired_world_ori = np.dot(self.origin_ori, self.goal_ori)
-            elif self.input_ref_frame == "world":
-                desired_world_ori = self.goal_ori
-            else:
-                raise ValueError
-            ori_error = orientation_error(desired_world_ori, self.ref_ori_mat)
-
-        # Compute desired force and torque based on errors
-        position_error = desired_world_pos - self.ref_pos
-        base_pos_vel = np.array(self.sim.data.get_site_xvelp(f"{self.naming_prefix}{self.part_name}_center"))
-        vel_pos_error = -(self.ref_pos_vel - base_pos_vel)
-
-        # F_r = kp * pos_err + kd * vel_err
-        desired_force = np.multiply(np.array(position_error), np.array(self.kp[0:3])) + np.multiply(
-            vel_pos_error, self.kd[0:3]
-        )
-
-        base_ori_vel = np.array(self.sim.data.get_site_xvelr(f"{self.naming_prefix}{self.part_name}_center"))
-        vel_ori_error = -(self.ref_ori_vel - base_ori_vel)
-
-        # Tau_r = kp * ori_err + kd * vel_err
-        desired_torque = np.multiply(np.array(ori_error), np.array(self.kp[3:6])) + np.multiply(
-            vel_ori_error, self.kd[3:6]
-        )
-
-        # Compute nullspace matrix (I - Jbar * J) and lambda matrices ((J * M^-1 * J^T)^-1)
-        lambda_full, lambda_pos, lambda_ori, nullspace_matrix = opspace_matrices(
-            self.mass_matrix, self.J_full, self.J_pos, self.J_ori
-        )
-
-        # Decouples desired positional control from orientation control
-        if self.uncoupling:
-            decoupled_force = np.dot(lambda_pos, desired_force)
-            decoupled_torque = np.dot(lambda_ori, desired_torque)
-            decoupled_wrench = np.concatenate([decoupled_force, decoupled_torque])
-        else:
-            desired_wrench = np.concatenate([desired_force, desired_torque])
-            decoupled_wrench = np.dot(lambda_full, desired_wrench)
-
-        # Gamma (without null torques) = J^T * F + gravity compensations
-        # ch
-        self.torques = np.dot(self.J_full.T, decoupled_wrench) + self.torque_compensation
-        # Calculate and add nullspace torques (nullspace_matrix^T * Gamma_null) to final torques
-        # Note: Gamma_null = desired nullspace pose torques, assumed to be positional joint control relative
-        #                     to the initial joint positions
-        self.torques += nullspace_torques(
-            self.mass_matrix, nullspace_matrix, self.initial_joint, self.joint_pos, self.joint_vel,
-            joint_kp=20
-        )
+                # If no solution found, use current joint positions as fallback
+                q_desired = self.joint_pos.copy()
+                
+        except Exception as e:
+            # If IK fails, use current joint positions as fallback
+            print(f"IK failed: {e}")
+            q_desired = self.joint_pos.copy()
+        
+        # Compute joint position and velocity errors
+        joint_pos_error = q_desired - self.joint_pos
+        # wrap joint position error to [-pi, pi]
+        joint_pos_error = (joint_pos_error + np.pi) % (2 * np.pi) - np.pi 
+        joint_vel_error = -self.joint_vel  # Desired velocity is zero
+        
+        # Compute desired joint accelerations using PD control
+        # qdd_des = kp * joint_pos_error + kd * joint_vel_error
+        kp_joint = self.kp[0]  # Use first element of kp as joint space gain
+        kd_joint = self.kd[0]  # Use first element of kd as joint space damping
+        
+        qdd_desired = kp_joint * joint_pos_error + kd_joint * joint_vel_error
+        
+        # Compute torques using inverse dynamics: tau = M * qdd + gravity_compensation
+        self.torques = np.dot(self.mass_matrix, qdd_desired) + self.torque_compensation
 
         # Always run superclass call for any cleanups at the end
         super().run_controller()
@@ -581,4 +588,4 @@ class OperationalSpaceControllerGeo(Controller):
 
     @property
     def name(self):
-        return "OSC_" + self.name_suffix
+        return "OSC_GEO_" + self.name_suffix

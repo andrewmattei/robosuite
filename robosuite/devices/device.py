@@ -5,6 +5,7 @@ import numpy as np
 
 import robosuite.utils.transform_utils as T
 from robosuite.controllers.parts.arm.osc import OperationalSpaceController
+from robosuite.controllers.parts.arm.osc_geo import OperationalSpaceControllerGeo
 
 
 class Device(metaclass=abc.ABCMeta):
@@ -114,7 +115,7 @@ class Device(metaclass=abc.ABCMeta):
         controller = robot.part_controllers[active_arm]
         gripper_dof = robot.gripper[active_arm].dof
 
-        assert controller.name in ["OSC_POSE", "JOINT_POSITION"], "only supporting OSC_POSE and JOINT_POSITION for now"
+        assert controller.name in ["OSC_POSE", "JOINT_POSITION", "OSC_GEO_POSE"], "only supporting OSC_POSE and JOINT_POSITION for now"
 
         # process raw device inputs
         drotation = raw_drotation[[1, 0, 2]]
@@ -182,6 +183,14 @@ class Device(metaclass=abc.ABCMeta):
 
         # TODO: the logic between OSC and while body based ik is fragmented right now. Unify
         if isinstance(robot.part_controllers[arm], OperationalSpaceController):
+            arm_controller = robot.part_controllers[arm]
+            delta_action = arm_controller.scale_action(norm_delta.copy())
+            abs_action = arm_controller.delta_to_abs_action(delta_action, goal_update_mode=None)
+            return {
+                "delta": norm_delta,
+                "abs": abs_action,
+            }
+        elif isinstance(robot.part_controllers[arm], OperationalSpaceControllerGeo):
             arm_controller = robot.part_controllers[arm]
             delta_action = arm_controller.scale_action(norm_delta.copy())
             abs_action = arm_controller.delta_to_abs_action(delta_action, goal_update_mode=None)

@@ -142,6 +142,141 @@ def forward_kinematics_homogeneous(q, fk_fun):
 def end_effector_position(q, pos_fun):
     return pos_fun(q)
 
+def get_frame_transforms_from_pinocchio(model):
+    """
+    Extract frame transformations R_i_i+1 and p_i_i+1 from Pinocchio model,
+    including the transformation from joint 7 to the end effector frame.
+    
+    Args:
+        model: Pinocchio model
+        
+    Returns:
+        dict with:
+        - 'R_transforms': list of 3x3 rotation matrices [R_0_1, R_1_2, ..., R_6_7, R_7_T]
+        - 'p_transforms': list of 3x1 position vectors [p_0_1, p_1_2, ..., p_6_7, p_7_T]
+        - 'joint_names': list of joint/frame names
+    """
+    R_transforms = []
+    p_transforms = []
+    joint_names = []
+    
+    print(f"Model has {model.njoints} joints and {model.nv} DOF")
+    
+    # Loop through all joints (skip universe joint at index 0)
+    for joint_id in range(1, model.njoints):
+        joint = model.joints[joint_id]
+        
+        # Get the joint placement from the model (this is the local transform)
+        M_local = model.jointPlacements[joint_id]
+        
+        # Extract rotation and translation
+        R_i_iplus1 = M_local.rotation.copy()  # 3x3 numpy array
+        p_i_iplus1 = M_local.translation.copy()  # 3x1 numpy array
+        
+        R_transforms.append(R_i_iplus1)
+        p_transforms.append(p_i_iplus1)
+        joint_names.append(joint.shortname())
+        
+        # print(f"\nJoint {joint_id-1} -> {joint_id} ({joint.shortname()}):")
+        # print(f"  Translation: {p_i_iplus1}")
+        # print(f"  Rotation:\n{R_i_iplus1}")
+    
+    # Add transformation from joint 7 to end effector frame
+    try:
+        # Find the end effector frame
+        end_effector_frame_id = None
+        for frame_id in range(len(model.frames)):
+            frame = model.frames[frame_id]
+            if frame.name == "end_effector":
+                end_effector_frame_id = frame_id
+                break
+        
+        if end_effector_frame_id is not None:
+            frame = model.frames[end_effector_frame_id]
+            # Get the frame placement (transformation from parent joint to this frame)
+            M_7_T = frame.placement
+            
+            # Extract rotation and translation
+            R_7_T = M_7_T.rotation.copy()  # 3x3 numpy array
+            p_7_T = M_7_T.translation.copy()  # 3x1 numpy array
+            
+            R_transforms.append(R_7_T)
+            p_transforms.append(p_7_T)
+            joint_names.append("end_effector")
+            
+            # print(f"\nJoint 7 -> End Effector (end_effector):")
+            # print(f"  Translation: {p_7_T}")
+            # print(f"  Rotation:\n{R_7_T}")
+        else:
+            print("\nWarning: 'end_effector' frame not found in model")
+            # Check what frames are available
+            print("Available frames:")
+            for frame_id in range(len(model.frames)):
+                frame = model.frames[frame_id]
+                print(f"  Frame {frame_id}: {frame.name}")
+    except Exception as e:
+        print(f"\nError processing end effector frame: {e}")
+    
+    return {
+        'R': R_transforms,
+        'p': p_transforms,
+        'joint_names': joint_names
+    }
+
+def get_single_frame_transform(model, i):
+    """
+    Get transformation R_i_i+1 and p_i_i+1 for joint index i.
+    
+    Args:
+        model: Pinocchio model
+        i: Joint index (0 to 6 for 7-DOF robot, or 7 for end effector frame)
+        
+    Returns:
+        tuple: (R_i_iplus1, p_i_iplus1)
+    """
+    if i < 0 or i > model.nv:
+        raise ValueError(f"Joint index i must be between 0 and {model.nv} (including end effector)")
+    
+    # Special case for end effector frame (i == 7)
+    if i == model.nv:
+        try:
+            # Find the end effector frame
+            end_effector_frame_id = None
+            for frame_id in range(len(model.frames)):
+                frame = model.frames[frame_id]
+                if frame.name == "end_effector":
+                    end_effector_frame_id = frame_id
+                    break
+            
+            if end_effector_frame_id is not None:
+                frame = model.frames[end_effector_frame_id]
+                # Get the frame placement (transformation from parent joint to this frame)
+                M_7_T = frame.placement
+                
+                # Extract rotation and translation
+                R_7_T = M_7_T.rotation.copy()  # 3x3 numpy array
+                p_7_T = M_7_T.translation.copy()  # 3x1 numpy array
+                
+                return R_7_T, p_7_T
+            else:
+                raise ValueError("End effector frame 'end_effector' not found in model")
+        except Exception as e:
+            raise ValueError(f"Error accessing end effector frame: {e}")
+    
+    # Normal joint transformation (i < model.nv)
+    # Joint ID (skip universe joint)
+    joint_id = i + 1
+    
+    # Get the joint placement from the model
+    M_local = model.jointPlacements[joint_id]
+    
+    # Extract rotation and translation
+    R_i_iplus1 = M_local.rotation.copy()     # 3x3 numpy array
+    p_i_iplus1 = M_local.translation.copy()  # 3x1 numpy array
+
+    return R_i_iplus1, p_i_iplus1
+
+
 def inverse_kinematics_casadi(
     target_pose, fk_fun,
     q_init=None, lb=None, ub=None,
@@ -258,100 +393,6 @@ def inverse_kinematics_casadi_elbow_above(
 
     sol = solver(**args)
     return sol['x']
-
-
-# def inverse_kinematics_pin(
-#     model,              # pinocchio.Model  (NumPy version)
-#     data,               # pinocchio.Data
-#     frame_id,           # integer frame ID of the end-effector
-#     q_init,             # (7,) NumPy array in standard rep (angles)
-#     target_pose,        # pin.SE3  (desired EE pose)  OR   4×4 NumPy array
-#     fk_fun,             # CasADi Function: q_std (7×1) → 4×4 EE homogeneous
-#     jac_fun,            # CasADi Function: q_std (7×1) → 6×7 spatial Jacobian (world‐frame)
-#     tol=1e-9,
-#     max_iter=100,
-# ):
-#     """
-#     A fast iterative IK that uses:
-#       • `fk_fun(q_std)`    → 4×4 SX/DM “current EE pose”
-#       • `jac_fun(q_std)`   → 6×7 SX/DM spatial Jacobian (world‐aligned)
-#       • Pinocchio’s `integrate` and `log` (NumPy) for Δq on the manifold.
-
-#     Args:
-#       model, data   :  Pinocchio model/data (NumPy version)
-#       frame_id      :  index of ee frame
-#       q_init        :  (7,) NumPy “standard” joint angles
-#       target_pose   :  pin.SE3  or 4×4 NumPy (desired EE pose)
-#       fk_fun        :  CasADi Function: q_std → 4×4 homogeneous (SX/DM)
-#       jac_fun       :  CasADi Function: q_std → 6×7 Jacobian (SX/DM)
-#       tol           :  convergence tol on ‖err6‖
-#       max_iter      :  max Newton steps
-#       damp          :  damping weight for pseudo‐inverse
-
-#     Returns:
-#       (q_sol, success_flag)
-#         • q_sol is a (7,) NumPy array (standard rep)
-#         • success_flag is True if ‖err6‖ < tol within max_iter
-#     """
-
-#     R_des = target_pose[0:3, 0:3]
-#     p_des = target_pose[0:3, 3]
-#     oMf_des = pin.SE3(R_des, p_des)
-
-#     # 2) Initialize q (standard 7×1) and success flag
-#     q = q_init.copy()
-#     success = False
-
-#     for i in range(max_iter):
-#         # 3) Evaluate FK via CasADi: returns a 4×4 DM or SX; convert to NumPy
-#         Tcur_cas = fk_fun(q)   # returns a 4×4 DM if q is numpy; or SX if q is SX
-#         # We want numeric, so force .full() if it’s DM:
-#         if isinstance(Tcur_cas, cs.DM):
-#             Tcur_num = np.array(Tcur_cas.full())
-#         else:
-#             # If somehow we get SX (rare, since q is numeric), explicitly evaluate:
-#             Tcur_num = np.array(cs.Function('tmp', [], [Tcur_cas])().full())
-
-#         Rcur = Tcur_num[0:3, 0:3]
-#         tcur = Tcur_num[0:3, 3]
-#         oMf_cur = pin.SE3(Rcur, tcur)
-
-#         # 4) Compute SE(3) error: dM = oMf_des * oMf_cur⁻¹
-#         dM = oMf_des.actInv(oMf_cur)         # pin.SE3
-#         err6 = pin.log(dM).vector            # 6×1 NumPy
-
-#         # 5) Check convergence
-#         err_norm = np.linalg.norm(err6)
-#         if err_norm < tol:
-#             success = True
-#             break
-
-#         # 6) Evaluate spatial Jacobian (6×7) via CasADi, convert to NumPy
-#         Jcas = jac_fun(q)
-#         if isinstance(Jcas, cs.DM):
-#             J6 = np.array(Jcas.full())
-#         else:
-#             J6 = np.array(cs.Function('tmpJ', [], [Jcas])().full())
-
-#         # 7) Damped least‐squares:  solve  (J6 J6ᵀ + damp·I) x = err6
-#         JJt = J6.dot(J6.T) + damp * np.eye(6)
-#         sol = np.linalg.solve(JJt, err6)    # (6,)
-#         dq  = -J6.T.dot(sol)                # (7,)
-
-#         # 8) Integrate dq on the manifold with Pinocchio
-#         #    a) Convert current q (standard) → Pinocchio rep
-#         q_pin = standard_to_pinocchio(model, q)  # (nq,) NumPy = (13,) if there’s free-flyer; but on Kinova it’s (7 joint dims but pinocchio uses 7+? 
-#                                                 # Actually, for Kinova “buildModelFromUrdf” yields an 7‐joint chain with no root free‐flyer, so nq=nq_pin=7.)
-#         #    b) Integrate
-#         q_pin_next = pin.integrate(model, q_pin, dq)
-#         #    c) Convert back to “standard” angles
-#         q = pinocchio_to_standard(model, q_pin_next)
-
-#         # 9) (Optional) Print every 10 iters
-#         if i % 10 == 0:
-#             print(f"[fast IK] iter {i:3d}  |  ‖err6‖ = {err_norm:.3e}")
-
-#     return q, success
 
 
 def compute_jacobian(q, jac_fun):
@@ -581,7 +622,7 @@ def match_trajectories(T_des, *args):
         # Pad T and Z if T_des extends outside the original T range.
         if T_des[0] < T[0]:
             T = np.concatenate(([T_des[0]], T))
-            # Pre-pad Z with its first column.
+            # Pre-pad Z with its first column of Z_i,
             first_col = Z[:, [0]]
             Z = np.concatenate((first_col, Z), axis=1)
 
@@ -777,7 +818,7 @@ def back_propagate_traj_using_manip_ellipsoid(
     accel_mag = None
     
     if v_p_mag is not None:
-        # create a velocity profile that peaks at v_peak at some point such that
+        # create a velocity profile that peaks at v_p_mag at some point such that
         # the acceleration and deceleration equals and are constant
         # let i_p be the index where the peak occurs
         # since v_0 = 0, the acceleration slope is v_p_mag / i_p
@@ -995,7 +1036,7 @@ def back_trace_from_traj(traj, jac_fun, ratio=0.5):
     and execute until ee_velocity reaches ratio * v_p_mag, it will then 
     deccelerate to zero with the same magnitude of acceleration.
     Args:
-        traj: dict with keys 'q', 'dq', 'U', 'T', 'Z', 'q_f', 'v_f', 'v_p_mag', 'accel_mag'
+        traj: dict with keys 'q', 'dq', 'U', 'T', 'Z', 'v_p_mag', 'accel_mag'
         jac_fun: CasADi function to compute the Jacobian
         ratio: float, the ratio of the current peak velocity to the traj peak velocity
 
@@ -1362,13 +1403,17 @@ if __name__ == "__main__":
 
     # # Example IK
     q_init = np.array([0.000, 0.650, 0.000, 1.890, 0.000, 0.600, -np.pi / 2])
-    q_init_2 = np.radians([0, 15, 180, 230, 0, -35, 90])
+    q_init_2 = np.radians([0, 15, 180, 230, 0, -35, 90]) 
+    # array([ 0.   ,  0.262, -3.142, -2.269,  0.   , -0.611,  1.571])
+    # array([   0.,   15., -180., -130.,    0.,  -35.,   90.])
     target_pose = fk_fun(q_init).full()
     target_pose[0:3, 3] = p_f
     q_sol = inverse_kinematics_casadi(target_pose, fk_fun, q_init).full().flatten()
     print("IK solution:", q_sol)
     resulted_pose = fk_fun(q_sol)
     print("Resulted pose from IK:\n", resulted_pose.full())
+
+    print("zero angle pose:", fk_fun(np.zeros(7)).full())
 
     # 3) Extract bounds from model (example values here; replace with real ones)
     rev_lim = np.pi
@@ -1429,3 +1474,37 @@ if __name__ == "__main__":
 
     # e.g. send (q_opt[:,k], dq_opt[:,k]) at each control tick,
     # or forward‐kinematics to plot end-effector path
+
+    print("Testing Frame Transformations with Pinocchio")
+    print("=" * 50)
+    
+    # Load model
+    model = pin.buildModelFromUrdf(urdf_path)
+    data = model.createData()
+    
+    print(f"Loaded model with {model.nv} DOF")
+    
+    # Test getting all transformations
+    transforms = get_frame_transforms_from_pinocchio(model)
+    
+    print(f"\n" + "="*50)
+    print("Testing specific joint access:")
+    
+    # Test getting individual transformations (including end effector)
+    for i in range(model.nv + 1):  # Include end effector frame at index 7
+        try:
+            R, p = get_single_frame_transform(model, i)
+            if i < model.nv:
+                print(f"\nDirect access for joint {i}:")
+                print(f"  R_{i}_{i+1} =\n{R}")
+                print(f"  p_{i}_{i+1} = {p}")
+            else:
+                print(f"\nDirect access for end effector frame (joint {i-1} -> end effector):")
+                print(f"  R_7_T =\n{R}")
+                print(f"  p_7_T = {p}")
+            
+            # Compare with the list version
+            if i < len(transforms['R']):
+                print(f"  Matches list version: {np.allclose(R, transforms['R'][i])}")
+        except Exception as e:
+            print(f"\nError accessing frame {i}: {e}")

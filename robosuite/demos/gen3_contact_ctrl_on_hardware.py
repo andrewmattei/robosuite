@@ -356,8 +356,8 @@ class Kinova3HardwareController:
         state_dim = Z_opt.shape[0]
         control_dim = U_opt.shape[0]
         Q = np.eye(state_dim)
-        Q[:control_dim, :control_dim] *= 6e6
-        Q[control_dim:, control_dim:] *= 6e3
+        Q[:control_dim, :control_dim] *= 6e7
+        Q[control_dim:, control_dim:] *= 6e4
         R = np.eye(control_dim) * 1e-5
 
         # Backward Riccati recursion
@@ -1181,9 +1181,9 @@ def main():
         ###### Example trajectory generation
         # Target pose and velocity
         # p_ee_to_ball_buttom = 0.05 + 0.025 + 0.2
-        p_ee_to_ball_buttom = 0.081
-        p_f = np.array([0.5, -0.05, p_ee_to_ball_buttom])    # meters
-        v_f = np.array([0, 0, -0.5])   # m/s
+        p_ee_to_ball_buttom = 0.0513
+        p_f = np.array([0.58, 0.03, p_ee_to_ball_buttom])    # meters
+        v_f = np.array([0, 0, -0.1])   # m/s
         v_p_mag = np.linalg.norm(v_f)+0.5
 
         gen3.p_f = p_f
@@ -1196,6 +1196,13 @@ def main():
         target_pose[0:3, 3] = p_f
 
         gen3.R_f = target_pose[:3, :3]  # Rotation part of the target pose
+
+        ## read current EE pose
+        q_curr = np.radians(np.array(tb.get_joint_angles(gen3.base))-360)
+        # wrap angles to [-pi, pi]
+        q_curr = (q_curr + np.pi) % (2 * np.pi) - np.pi
+        H_base_ee = gen3.get_ee_pose_in_base(q_curr)
+        print(f"Current EE pose in base frame:\n{H_base_ee}")
         
         # Solve inverse kinematics
         q_sol = opt.inverse_kinematics_casadi(

@@ -82,7 +82,12 @@
                         <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" name="right_b_visual" mesh="bracelet_with_vision_link"/>
                         <geom type="mesh" conaffinity="0" rgba="0.75294 0.75294 0.75294 1" mesh="bracelet_with_vision_link" name="right_b_collision"/>
                         <body name="right_hand" pos="0 0 -0.0615" quat="0 0.707105 -0.707108 0">
-                          <!-- This camera points out from the eef. -->
+                        <!-- correction frame to force RPY=(π,0,0) -->
+                        <body name="right_end_effector" pos="0 0 0" quat="0.7071068 0 0 -0.7071068">
+                          <!-- define a site at the origin of this corrected frame -->
+                          <site name="right_end_effector_site" pos="0 0 0" size="0.01" rgba="1 0 0 1" group="1"/>
+                        </body>
+                        <!-- This camera points out from the eef. -->
                           <camera mode="fixed" name="right_eye_in_hand" pos="0.05 0 0" quat="0 0.707108 0.707108 0" fovy="75"/>
                           <!-- To add gripper -->
                         </body>
@@ -146,6 +151,12 @@
                         <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" name="left_b_visual" mesh="bracelet_with_vision_link"/>
                         <geom type="mesh" conaffinity="0" rgba="0.75294 0.75294 0.75294 1" mesh="bracelet_with_vision_link" name="left_b_collision"/>
                         <body name="left_hand" pos="0 0 -0.0615" quat="0 0.707105 -0.707108 0">
+                        <!-- correction frame to force RPY=(π,0,0) -->
+                        <body name="left_end_effector" pos="0 0 0" quat="0.7071068 0 0 -0.7071068">
+                          <!-- define a site at the origin of this corrected frame -->
+                          <site name="left_end_effector_site" pos="0 0 0" size="0.01" rgba="1 0 0 1" group="1"/>
+                        </body>
+                        <!-- This camera points out from the eef. -->
                           <!-- This camera points out from the eef. -->
                           <camera mode="fixed" name="left_eye_in_hand" pos="0.05 0 0" quat="0 0.707108 0.707108 0" fovy="75"/>
                           <!-- To add gripper -->

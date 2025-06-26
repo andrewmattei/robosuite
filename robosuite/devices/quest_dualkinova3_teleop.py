@@ -416,8 +416,8 @@ class QuestDualKinova3Teleop(Device):
             
             # Get controller reference
             controller = robot.part_controllers[arm]
-            # assert controller.name in ["OSC_POSE", "JOINT_POSITION"], "only supporting OSC_POSE and JOINT_POSITION for now"
-            assert controller.name == "OSC_POSE", "only supporting OSC_POSE for now"
+            assert controller.name in ["OSC_POSE", "OSC_GEO_POSE"], "only supporting OSC_POSE and OSC_GEO_POSE for now"
+            # assert controller.name == "OSC_POSE", "only supporting OSC_POSE for now"
             
             
             drotation = raw_drotation
