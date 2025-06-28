@@ -53,7 +53,7 @@ class DualKinova3SRLEnv(ManipulationEnv):
         # settings for table top
         self.table_full_size = table_full_size
         self.table_friction = table_friction
-        self.table_offset = np.array((0, 0, 0.4))  # made changes
+        self.table_offset = np.array((0, 0, 0.6))  # made changes
 
         # Omron LD-60 Mobile Base setting
         self.init_torso_height = 0.342

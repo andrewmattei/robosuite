@@ -1090,9 +1090,9 @@ def IK_2R_2R_3R_numerical(R_0_7, p_0_T, sew_stereo, psi, model_transforms):
 
     # Find wrist position in base frame
     p_7_T_0 = R_0_7 @ p_7T
-    p_6_7_0 = R_0_7 @ R_67.T @ p_67 # vector at q6 = 0
-    p_W_7_0 = np.zeros(3) 
-    p_W_7_0[2] = p_6_7_0[2]  # wrist at the intersection of h6 and h7
+    p_W7 = np.zeros(3) 
+    p_W7[1] = p_67[1]      # wrist at the intersection of h6 and h7
+    p_W_7_0 = R_0_7 @ R_67.T @ p_W7 # vector at q6 = 0
     W = p_0_T - (p_W_7_0 + p_7_T_0)  # Wrist position in base frame between joint 6 and 7
 
     # Find shoulder position (fixed in base frame)
@@ -1477,7 +1477,7 @@ if __name__ == "__main__":
     
     # Test inverse kinematics function
     # Create SEW stereo instance
-    r, v = np.array([0, 0, -1]), np.array([0, 1, 0])
+    r, v = np.array([1, 0, 0]), np.array([0, 1, 0])
     sew_stereo = SEWStereo(r, v)
     # Get frame transformations from the Kinova model
     model = pin.buildModelFromUrdf(kinova_path)
@@ -1486,6 +1486,8 @@ if __name__ == "__main__":
     fk_fun, pos_fun, jac_fun, M_fun, C_fun, G_fun = opt.build_casadi_kinematics_dynamics(model, 'tool_frame')
     # Create test data
     q_init = np.radians([   0.,   15., -180., -130.,    0.,  -35.,   90.])
+    # q_init = np.radians([   90.,   90., -90., 90.,    0.,  0.,   90.])
+    # q_init = np.array([1.571, 1.571, -1.571, 1.571, 0.000, 0.524, 1.571])
     # q_init = np.radians([0, 0, 0, 0, 0, 0, 0])  # Use zero angles for testing
     target_pose = fk_fun(q_init).full()  # 4x4 homogeneous matrix
     R_0T = target_pose[:3, :3]  # Desired end-effector orientation
@@ -1547,6 +1549,7 @@ if __name__ == "__main__":
         print(f"Target end-effector pose:")
         print(f"  Position: {target_pose_4x4[:3, 3]}")
         print(f"  Orientation:\n{target_pose_4x4[:3, :3]}")
+        print(f"  Desired Elbow angle (psi): {psi_test:.3f} rad ({np.degrees(psi_test):.1f}°)")
         
         print(f"\nVerifying all {Q_num.shape[1]} IK solutions:")
         
@@ -1595,215 +1598,215 @@ if __name__ == "__main__":
     else:
         print("No IK solutions found to verify!")
     
-    # Test CasADi symbolic version with timing
-    print("\n" + "="*60)
-    print("TESTING CASADI SYMBOLIC IK FUNCTION")
-    print("="*60)
+    # # Test CasADi symbolic version with timing
+    # print("\n" + "="*60)
+    # print("TESTING CASADI SYMBOLIC IK FUNCTION")
+    # print("="*60)
     
-    # Initialize variables to avoid NameError
-    Q_casadi = []
-    is_LS_casadi = []
-    symbolic_build_time = 0
-    symbolic_inference_time = 0
+    # # Initialize variables to avoid NameError
+    # Q_casadi = []
+    # is_LS_casadi = []
+    # symbolic_build_time = 0
+    # symbolic_inference_time = 0
     
-    try:
-        # Time the graph building phase
-        print("Building symbolic CasADi IK graph...")
-        build_start = time.perf_counter()
+    # try:
+    #     # Time the graph building phase
+    #     print("Building symbolic CasADi IK graph...")
+    #     build_start = time.perf_counter()
         
-        # Create symbolic SEW stereo instance (this includes graph building)
-        sew_stereo_symbolic = SEWStereoSymbolic(r, v)
+    #     # Create symbolic SEW stereo instance (this includes graph building)
+    #     sew_stereo_symbolic = SEWStereoSymbolic(r, v)
         
-        # First call to IK function (includes graph compilation)
-        casadi_result = IK_2R_2R_3R_casadi(R_0_7_test, p_0_T_test, sew_stereo_symbolic, 
-                                           psi_test, model_transforms)
+    #     # First call to IK function (includes graph compilation)
+    #     casadi_result = IK_2R_2R_3R_casadi(R_0_7_test, p_0_T_test, sew_stereo_symbolic, 
+    #                                        psi_test, model_transforms)
         
-        build_end = time.perf_counter()
-        symbolic_build_time = build_end - build_start
+    #     build_end = time.perf_counter()
+    #     symbolic_build_time = build_end - build_start
         
-        # Time only the inference phase (multiple runs for accuracy)
-        print("Timing symbolic inference...")
-        inference_start = time.perf_counter()
-        for _ in range(num_runs):
-            casadi_result = IK_2R_2R_3R_casadi(R_0_7_test, p_0_T_test, sew_stereo_symbolic, 
-                                               psi_test, model_transforms)
-        inference_end = time.perf_counter()
-        symbolic_inference_time = (inference_end - inference_start) / num_runs
+    #     # Time only the inference phase (multiple runs for accuracy)
+    #     print("Timing symbolic inference...")
+    #     inference_start = time.perf_counter()
+    #     for _ in range(num_runs):
+    #         casadi_result = IK_2R_2R_3R_casadi(R_0_7_test, p_0_T_test, sew_stereo_symbolic, 
+    #                                            psi_test, model_transforms)
+    #     inference_end = time.perf_counter()
+    #     symbolic_inference_time = (inference_end - inference_start) / num_runs
         
-        Q_casadi = casadi_result['solutions']
-        is_LS_casadi = casadi_result['is_LS_flags']
+    #     Q_casadi = casadi_result['solutions']
+    #     is_LS_casadi = casadi_result['is_LS_flags']
         
-        print(f"Symbolic IK found {len(Q_casadi)} potential solutions")
+    #     print(f"Symbolic IK found {len(Q_casadi)} potential solutions")
         
-        if len(Q_casadi) > 0:
-            print(f"\nIntermediate results:")
-            intermediate = casadi_result['intermediate_results']
-            # Convert CasADi expressions to numerical values for display
-            try:
-                S_val = [float(intermediate['S'][i]) for i in range(3)]
-                W_val = [float(intermediate['W'][i]) for i in range(3)]
-                d_SE_val = float(intermediate['d_SE'])
-                d_EW_val = float(intermediate['d_EW'])
+    #     if len(Q_casadi) > 0:
+    #         print(f"\nIntermediate results:")
+    #         intermediate = casadi_result['intermediate_results']
+    #         # Convert CasADi expressions to numerical values for display
+    #         try:
+    #             S_val = [float(intermediate['S'][i]) for i in range(3)]
+    #             W_val = [float(intermediate['W'][i]) for i in range(3)]
+    #             d_SE_val = float(intermediate['d_SE'])
+    #             d_EW_val = float(intermediate['d_EW'])
                 
-                print(f"  Shoulder S: {S_val}")
-                print(f"  Wrist W: {W_val}")
-                print(f"  Shoulder-Elbow distance d_SE: {d_SE_val:.3f}")
-                print(f"  Elbow-Wrist distance d_EW: {d_EW_val:.3f}")
-            except Exception as e:
-                print(f"  Could not display intermediate results: {e}")
+    #             print(f"  Shoulder S: {S_val}")
+    #             print(f"  Wrist W: {W_val}")
+    #             print(f"  Shoulder-Elbow distance d_SE: {d_SE_val:.3f}")
+    #             print(f"  Elbow-Wrist distance d_EW: {d_EW_val:.3f}")
+    #         except Exception as e:
+    #             print(f"  Could not display intermediate results: {e}")
             
-            # Evaluate symbolic solutions to numerical values
-            print(f"\nEvaluating symbolic solutions:")
+    #         # Evaluate symbolic solutions to numerical values
+    #         print(f"\nEvaluating symbolic solutions:")
             
-            for i, (q_sym, is_ls_sym) in enumerate(zip(Q_casadi, is_LS_casadi)):
-                try:
-                    # Convert symbolic solution to numerical
-                    q_numerical = np.array([float(q_sym[j]) for j in range(7)])
-                    is_ls_numerical = float(is_ls_sym) > 0.5
+    #         for i, (q_sym, is_ls_sym) in enumerate(zip(Q_casadi, is_LS_casadi)):
+    #             try:
+    #                 # Convert symbolic solution to numerical
+    #                 q_numerical = np.array([float(q_sym[j]) for j in range(7)])
+    #                 is_ls_numerical = float(is_ls_sym) > 0.5
                     
-                    print(f"\n  Symbolic Solution {i+1} ({'LS' if is_ls_numerical else 'exact'}):")
-                    print(f"    Joint angles: {np.degrees(q_numerical).round(1)}°")
+    #                 print(f"\n  Symbolic Solution {i+1} ({'LS' if is_ls_numerical else 'exact'}):")
+    #                 print(f"    Joint angles: {np.degrees(q_numerical).round(1)}°")
                     
-                    # Check joint limits
-                    rev_lim = np.pi
-                    q_lower = np.array([-rev_lim, -2.41, -rev_lim, -2.66, -rev_lim, -2.23, -rev_lim])
-                    q_upper = np.array([ rev_lim,  2.41,  rev_lim,  2.66,  rev_lim,  2.23,  rev_lim])
+    #                 # Check joint limits
+    #                 rev_lim = np.pi
+    #                 q_lower = np.array([-rev_lim, -2.41, -rev_lim, -2.66, -rev_lim, -2.23, -rev_lim])
+    #                 q_upper = np.array([ rev_lim,  2.41,  rev_lim,  2.66,  rev_lim,  2.23,  rev_lim])
                     
-                    within_limits = np.all(q_numerical >= q_lower) and np.all(q_numerical <= q_upper)
-                    print(f"    Within joint limits: {'✓' if within_limits else '✗'}")
+    #                 within_limits = np.all(q_numerical >= q_lower) and np.all(q_numerical <= q_upper)
+    #                 print(f"    Within joint limits: {'✓' if within_limits else '✗'}")
                     
-                    if within_limits:
-                        # Verify forward kinematics
-                        T_computed = fk_fun(q_numerical).full()
-                        p_computed = T_computed[:3, 3]
-                        R_computed = T_computed[:3, :3]
+    #                 if within_limits:
+    #                     # Verify forward kinematics
+    #                     T_computed = fk_fun(q_numerical).full()
+    #                     p_computed = T_computed[:3, 3]
+    #                     R_computed = T_computed[:3, :3]
                         
-                        pos_error = np.linalg.norm(p_computed - target_pose_4x4[:3, 3])
-                        # Correct orientation error: eR = R_computed @ R_desired.T compared with Identity
-                        R_desired = target_pose_4x4[:3, :3]
-                        eR = R_computed @ R_desired.T
-                        ori_error = np.linalg.norm(eR - np.eye(3), 'fro')
+    #                     pos_error = np.linalg.norm(p_computed - target_pose_4x4[:3, 3])
+    #                     # Correct orientation error: eR = R_computed @ R_desired.T compared with Identity
+    #                     R_desired = target_pose_4x4[:3, :3]
+    #                     eR = R_computed @ R_desired.T
+    #                     ori_error = np.linalg.norm(eR - np.eye(3), 'fro')
                         
-                        if pos_error < 1e-3 and ori_error < 1e-2:
-                            print(f"    ✓ Symbolic solution {i+1} is accurate!")
-                        else:
-                            print(f"    ✗ Symbolic solution {i+1} has significant error")
+    #                     if pos_error < 1e-3 and ori_error < 1e-2:
+    #                         print(f"    ✓ Symbolic solution {i+1} is accurate!")
+    #                     else:
+    #                         print(f"    ✗ Symbolic solution {i+1} has significant error")
                     
-                except Exception as e:
-                    print(f"    ✗ Error evaluating symbolic solution {i+1}: {e}")
+    #             except Exception as e:
+    #                 print(f"    ✗ Error evaluating symbolic solution {i+1}: {e}")
         
-        else:
-            print("No symbolic solutions found!")
+    #     else:
+    #         print("No symbolic solutions found!")
             
-    except Exception as e:
-        print(f"Error testing symbolic IK function: {e}")
-        import traceback
-        traceback.print_exc()
+    # except Exception as e:
+    #     print(f"Error testing symbolic IK function: {e}")
+    #     import traceback
+    #     traceback.print_exc()
     
-    # Compare numerical vs symbolic results
-    print("\n" + "="*60)
-    print("NUMERICAL VS SYMBOLIC COMPARISON")
-    print("="*60)
+    # # Compare numerical vs symbolic results
+    # print("\n" + "="*60)
+    # print("NUMERICAL VS SYMBOLIC COMPARISON")
+    # print("="*60)
     
-    if Q_num.shape[1] > 0 and len(Q_casadi) > 0:
-        print(f"Numerical solutions: {Q_num.shape[1]}")
-        print(f"Symbolic solutions: {len(Q_casadi)}")
+    # if Q_num.shape[1] > 0 and len(Q_casadi) > 0:
+    #     print(f"Numerical solutions: {Q_num.shape[1]}")
+    #     print(f"Symbolic solutions: {len(Q_casadi)}")
         
-        # Compare first valid solutions if they exist
-        try:
-            # Find first valid numerical solution
-            first_num_valid = None
-            for i in range(Q_num.shape[1]):
-                q_test = Q_num[:, i]
-                rev_lim = np.pi
-                q_lower = np.array([-rev_lim, -2.41, -rev_lim, -2.66, -rev_lim, -2.23, -rev_lim])
-                q_upper = np.array([ rev_lim,  2.41,  rev_lim,  2.66,  rev_lim,  2.23,  rev_lim])
-                if np.all(q_test >= q_lower) and np.all(q_test <= q_upper):
-                    first_num_valid = q_test
-                    break
+    #     # Compare first valid solutions if they exist
+    #     try:
+    #         # Find first valid numerical solution
+    #         first_num_valid = None
+    #         for i in range(Q_num.shape[1]):
+    #             q_test = Q_num[:, i]
+    #             rev_lim = np.pi
+    #             q_lower = np.array([-rev_lim, -2.41, -rev_lim, -2.66, -rev_lim, -2.23, -rev_lim])
+    #             q_upper = np.array([ rev_lim,  2.41,  rev_lim,  2.66,  rev_lim,  2.23,  rev_lim])
+    #             if np.all(q_test >= q_lower) and np.all(q_test <= q_upper):
+    #                 first_num_valid = q_test
+    #                 break
             
-            # Find exact match in symbolic solutions
-            exact_match_found = False
-            best_match_idx = -1
-            min_diff = float('inf')
+    #         # Find exact match in symbolic solutions
+    #         exact_match_found = False
+    #         best_match_idx = -1
+    #         min_diff = float('inf')
             
-            for i, q_sym in enumerate(Q_casadi):
-                try:
-                    q_test = np.array([float(q_sym[j]) for j in range(7)])
-                    if np.all(q_test >= q_lower) and np.all(q_test <= q_upper):
-                        diff = np.linalg.norm(first_num_valid - q_test)
-                        if diff < min_diff:
-                            min_diff = diff;
-                            best_match_idx = i
-                        if diff < 1e-3:  # Exact match threshold
-                            exact_match_found = True
-                            print(f"\n✓ EXACT MATCH FOUND!")
-                            print(f"  Numerical solution: {np.degrees(first_num_valid).round(1)}°")
-                            print(f"  Symbolic solution {i+1}: {np.degrees(q_test).round(1)}°")
-                            print(f"  Difference: {diff:.6f} rad ({np.degrees(diff):.3f}°)")
-                            break
-                except:
-                    continue
+    #         for i, q_sym in enumerate(Q_casadi):
+    #             try:
+    #                 q_test = np.array([float(q_sym[j]) for j in range(7)])
+    #                 if np.all(q_test >= q_lower) and np.all(q_test <= q_upper):
+    #                     diff = np.linalg.norm(first_num_valid - q_test)
+    #                     if diff < min_diff:
+    #                         min_diff = diff;
+    #                         best_match_idx = i
+    #                     if diff < 1e-3:  # Exact match threshold
+    #                         exact_match_found = True
+    #                         print(f"\n✓ EXACT MATCH FOUND!")
+    #                         print(f"  Numerical solution: {np.degrees(first_num_valid).round(1)}°")
+    #                         print(f"  Symbolic solution {i+1}: {np.degrees(q_test).round(1)}°")
+    #                         print(f"  Difference: {diff:.6f} rad ({np.degrees(diff):.3f}°)")
+    #                         break
+    #             except:
+    #                 continue
             
-            if not exact_match_found and best_match_idx >= 0:
-                q_best = np.array([float(Q_casadi[best_match_idx][j]) for j in range(7)])
-                print(f"\nClosest match found:")
-                print(f"  Numerical: {np.degrees(first_num_valid).round(1)}°")
-                print(f"  Symbolic solution {best_match_idx+1}: {np.degrees(q_best).round(1)}°")
-                print(f"  Difference: {min_diff:.6f} rad ({np.degrees(min_diff):.3f}°)")
+    #         if not exact_match_found and best_match_idx >= 0:
+    #             q_best = np.array([float(Q_casadi[best_match_idx][j]) for j in range(7)])
+    #             print(f"\nClosest match found:")
+    #             print(f"  Numerical: {np.degrees(first_num_valid).round(1)}°")
+    #             print(f"  Symbolic solution {best_match_idx+1}: {np.degrees(q_best).round(1)}°")
+    #             print(f"  Difference: {min_diff:.6f} rad ({np.degrees(min_diff):.3f}°)")
                 
-            if not exact_match_found and min_diff > 1e-1:
-                print("  ⚠ No close match found - this may indicate different solution branches")
+    #         if not exact_match_found and min_diff > 1e-1:
+    #             print("  ⚠ No close match found - this may indicate different solution branches")
                 
-        except Exception as e:
-            print(f"Error comparing solutions: {e}")
+    #     except Exception as e:
+    #         print(f"Error comparing solutions: {e}")
     
-    else:
-        print("Cannot compare - insufficient solutions from one or both methods")
+    # else:
+    #     print("Cannot compare - insufficient solutions from one or both methods")
     
-    # Performance comparison
-    print("\n" + "="*60)
-    print("PERFORMANCE COMPARISON")
-    print("="*60)
+    # # Performance comparison
+    # print("\n" + "="*60)
+    # print("PERFORMANCE COMPARISON")
+    # print("="*60)
     
-    print(f"Number of test runs: {num_runs}")
-    print(f"\nNumerical Implementation:")
-    print(f"  Average execution time: {numerical_time*1000:.3f} ms")
-    print(f"  Frequency: {1/numerical_time:.1f} Hz")
+    # print(f"Number of test runs: {num_runs}")
+    # print(f"\nNumerical Implementation:")
+    # print(f"  Average execution time: {numerical_time*1000:.3f} ms")
+    # print(f"  Frequency: {1/numerical_time:.1f} Hz")
     
-    if 'symbolic_build_time' in locals() and 'symbolic_inference_time' in locals():
-        print(f"\nSymbolic Implementation:")
-        print(f"  Graph building time (one-time): {symbolic_build_time*1000:.1f} ms")
-        print(f"  Average inference time: {symbolic_inference_time*1000:.3f} ms")
-        print(f"  Inference frequency: {1/symbolic_inference_time:.1f} Hz")
+    # if 'symbolic_build_time' in locals() and 'symbolic_inference_time' in locals():
+    #     print(f"\nSymbolic Implementation:")
+    #     print(f"  Graph building time (one-time): {symbolic_build_time*1000:.1f} ms")
+    #     print(f"  Average inference time: {symbolic_inference_time*1000:.3f} ms")
+    #     print(f"  Inference frequency: {1/symbolic_inference_time:.1f} Hz")
         
-        # Performance ratio
-        speedup = numerical_time / symbolic_inference_time
-        if speedup > 1:
-            print(f"\n🚀 Symbolic inference is {speedup:.1f}x FASTER than numerical")
-        elif speedup < 1:
-            print(f"\n⚠ Numerical is {1/speedup:.1f}x faster than symbolic inference")
-        else:
-            print(f"\n📊 Both implementations have similar performance")
+    #     # Performance ratio
+    #     speedup = numerical_time / symbolic_inference_time
+    #     if speedup > 1:
+    #         print(f"\n🚀 Symbolic inference is {speedup:.1f}x FASTER than numerical")
+    #     elif speedup < 1:
+    #         print(f"\n⚠ Numerical is {1/speedup:.1f}x faster than symbolic inference")
+    #     else:
+    #         print(f"\n📊 Both implementations have similar performance")
             
-        print(f"\nTotal time including graph building:")
-        total_symbolic_time = symbolic_build_time + symbolic_inference_time
-        if total_symbolic_time < numerical_time:
-            print(f"  Symbolic (build + inference): {total_symbolic_time*1000:.3f} ms")
-            print(f"  Still faster than numerical for single execution")
-        else:
-            print(f"  Symbolic (build + inference): {total_symbolic_time*1000:.3f} ms")
-            break_even = symbolic_build_time / (numerical_time - symbolic_inference_time)
-            if break_even > 0:
-                print(f"  Break-even point: {break_even:.0f} executions")
+    #     print(f"\nTotal time including graph building:")
+    #     total_symbolic_time = symbolic_build_time + symbolic_inference_time
+    #     if total_symbolic_time < numerical_time:
+    #         print(f"  Symbolic (build + inference): {total_symbolic_time*1000:.3f} ms")
+    #         print(f"  Still faster than numerical for single execution")
+    #     else:
+    #         print(f"  Symbolic (build + inference): {total_symbolic_time*1000:.3f} ms")
+    #         break_even = symbolic_build_time / (numerical_time - symbolic_inference_time)
+    #         if break_even > 0:
+    #             print(f"  Break-even point: {break_even:.0f} executions")
             
-    else:
-        print("Symbolic timing data not available")
+    # else:
+    #     print("Symbolic timing data not available")
         
-    print(f"\nMemory and computational characteristics:")
-    print(f"  Numerical: Direct computation, no compilation overhead")
-    print(f"  Symbolic: Compiled computational graph, optimized execution")
-    if 'Q_casadi' in locals() and len(Q_casadi) > 0:
-        print(f"  Both implementations produce {len(Q_casadi)} identical solutions")
+    # print(f"\nMemory and computational characteristics:")
+    # print(f"  Numerical: Direct computation, no compilation overhead")
+    # print(f"  Symbolic: Compiled computational graph, optimized execution")
+    # if 'Q_casadi' in locals() and len(Q_casadi) > 0:
+    #     print(f"  Both implementations produce {len(Q_casadi)} identical solutions")
 
 

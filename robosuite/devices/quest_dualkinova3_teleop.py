@@ -521,11 +521,12 @@ class QuestDualKinova3Teleop(Device):
         # ])
         # the axis oddly swapped after an usage??
         
-        self.R_rs_questwd = np.array([ # robot_T_headset
-            [-1, 0, 0],
-            [0, 0, 1],
-            [0, 1, 0]
-        ])
+        # self.R_rs_questwd = np.array([ # robot_T_headset
+        #     [-1, 0, 0],
+        #     [0, 0, 1],
+        #     [0, 1, 0]
+        # ])
+
         # self.R_rs_questwd = np.eye(3) # identity matrix for debug
         
         # rotate around z-axis for -90 degrees
@@ -542,13 +543,13 @@ class QuestDualKinova3Teleop(Device):
             ])
         else:
             self.R_rs_questwd = np.array([ # robot_T_headset
-                [-1, 0, 0],
-                [0, 0, 1],
+                [1, 0, 0],
+                [0, 0, -1],
                 [0, 1, 0]
             ])
             self.R_rs_questRctrl = np.array([
-                [-1, 0, 0],
-                [0, -1, 0],
+                [1, 0, 0],
+                [0, 1, 0],
                 [0, 0, 1]
             ])
         # self.R_rs_questRctrl = np.eye(3) # identity matrix for debug

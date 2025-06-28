@@ -236,7 +236,7 @@ class OperationalSpaceControllerGeo(Controller):
         self.p_ref_ee = R_wd_ref.T @ (p_wd_ee - p_wd_ref)  # Position from reference to end effector
 
         pin_model, _ = opt.load_kinova_model(kinova_path)
-        r, v = np.array([0, 0, -1]), np.array([0, 1, 0])
+        r, v = np.array([1, 0, 0]), np.array([0, 1, 0])
         self.sew_stereo = SEWStereo(r, v)
         self.model_transforms = opt.get_frame_transforms_from_pinocchio(pin_model)
         self.elbow_angle = get_elbow_angle_kinova(self.initial_joint, pin_model, self.sew_stereo)
@@ -455,12 +455,21 @@ class OperationalSpaceControllerGeo(Controller):
         R_0_7_desired = R_des_0_ee @ self.model_transforms['R'][-1]
         p_0_T_desired = p_des_0_ee
 
-        pin_T_0_T = self.fk_fun(self.joint_pos).full()
 
-        # debug
-        print(pin_T_0_T)
-        print(f"Desired position: {p_des_0_ee}, Current EE position: {self.world_to_origin_frame(self.ref_pos)}")
-        print(f"Desired orientation: \n{R_des_0_ee}, \nCurrent EE orientation: \n{self.ref_ori_mat}")
+        # # debug
+        # pin_T_0_T = self.fk_fun(self.joint_pos).full()
+
+        # R_0_T_curr = self.origin_ori.T @ self.sim.data.body_xmat[self.EE_id].reshape(3, 3)
+        # p_0_T_curr = self.world_to_origin_frame(self.sim.data.body_xpos[self.EE_id])
+        
+        # p_0_ref_curr_alt = self.world_to_origin_frame(self.ref_pos)
+        # R_0_ref_curr_alt = self.origin_ori.T @ self.ref_ori_mat
+        # R_0_T_curr_alt = R_0_ref_curr_alt @ self.R_ref_ee
+        # p_0_T_curr_alt= p_0_ref_curr_alt + R_0_ref_curr_alt @ self.p_ref_ee 
+        # print(pin_T_0_T)
+        # print(f"Desired position: {p_0_T_desired}, Current EE position: {p_0_T_curr_alt}")
+        # print(f"Desired orientation: \n{R_des_0_ee}, \nCurrent EE orientation: \n{R_0_T_curr_alt}")
+
         # Call IK solver to get desired joint angles
         try:
             Q_solutions, is_LS_vec = IK_2R_2R_3R_numerical(
@@ -480,6 +489,10 @@ class OperationalSpaceControllerGeo(Controller):
             print(f"IK failed: {e}")
             q_desired = self.joint_pos.copy()
         
+        # debug
+        # pin_T_0_T_des = self.fk_fun(q_desired).full()
+        # print(pin_T_0_T_des)
+
         # Compute joint position and velocity errors
         joint_pos_error = q_desired - self.joint_pos
         # wrap joint position error to [-pi, pi]
