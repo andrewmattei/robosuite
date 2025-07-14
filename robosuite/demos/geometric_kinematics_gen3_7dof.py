@@ -1,7 +1,8 @@
 import pinocchio as pin
 import pinocchio.casadi as cpin
-import casadi as cs
-import numpy as np
+
+from robosuite.demos.geometric_subproblems import *
+
 np.set_printoptions(precision=3, suppress=True)
 import os
 import traceback
@@ -14,813 +15,6 @@ from robosuite.demos.sew_stereo import SEWStereo, SEWStereoSymbolic, build_sew_s
 kinova_path = os.path.join(os.path.dirname(__file__), os.pardir, 'models', 'assets', 'robots',
                                 'dual_kinova3', 'leonardo.urdf')
 
-
-def sp_0(p, q, k):
-    """
-    Symbolic version of subproblem 0: finds theta such that q = rot(k, theta)*p
-    
-    ** assumes k'*p = 0 and k'*q = 0
-    
-    Requires that p and q are perpendicular to k. Use subproblem 1 if this is not
-    guaranteed.
-    
-    Args:
-        p: 3x1 CasADi SX/MX vector before rotation (must be perpendicular to k)
-        q: 3x1 CasADi SX/MX vector after rotation (must be perpendicular to k)
-        k: 3x1 CasADi SX/MX rotation axis unit vector
-        
-    Returns:
-        theta: CasADi SX/MX angle in radians
-    """
-    
-    # Normalize p and q
-    norm_p = cs.sqrt(cs.dot(p, p))
-    norm_q = cs.sqrt(cs.dot(q, q))
-    ep = p / norm_p
-    eq = q / norm_q
-    
-    # Calculate the angle using the reference formula
-    # theta = 2 * arctan2(||ep - eq||, ||ep + eq||)
-    ep_minus_eq = ep - eq
-    ep_plus_eq = ep + eq
-    
-    norm_diff = cs.sqrt(cs.dot(ep_minus_eq, ep_minus_eq))
-    norm_sum = cs.sqrt(cs.dot(ep_plus_eq, ep_plus_eq))
-    
-    theta = 2 * cs.atan2(norm_diff, norm_sum)
-    
-    # Check the sign using the cross product
-    # if k · (p × q) < 0, return -theta
-    cross_pq = cs.cross(p, q)
-    sign_check = cs.dot(k, cross_pq)
-    
-    # Use conditional logic for the sign
-    theta_signed = cs.if_else(sign_check < 0, -theta, theta)
-    
-    return theta_signed
-
-def sp_0_numerical(p, q, k):
-    """
-    Numerical version of subproblem 0: finds theta such that q = rot(k, theta)*p
-    
-    ** assumes k'*p = 0 and k'*q = 0
-           
-    Requires that p and q are perpendicular to k. Use subproblem 1 if this is not
-    guaranteed.
-
-    Args:
-        p: 3x1 numpy array vector before rotation
-        q: 3x1 numpy array vector after rotation  
-        k: 3x1 numpy array rotation axis unit vector
-        
-    Returns:
-        theta: scalar angle in radians
-    """
-    import numpy as np
-    
-    eps = np.finfo(np.float64).eps    
-    
-    # Check that p and q are perpendicular to k (optional assertion for debugging)
-    # assert (np.abs(np.dot(k,p)) < eps) and (np.abs(np.dot(k,q)) < eps), \
-    #        "k must be perpendicular to p and q"
-    
-    norm = np.linalg.norm
-    
-    ep = p / norm(p)
-    eq = q / norm(q)
-    
-    theta = 2 * np.arctan2(norm(ep - eq), norm(ep + eq))
-    
-    if (np.dot(k, np.cross(p, q)) < 0):
-        return -theta
-        
-    return theta
-
-def sp_1(p1, p2, k):
-    """
-    Subproblem 1: Plane and Sphere (Symbolic version)
-    
-    theta = sp_1(p1, p2, k) finds theta such that
-        rot(k, theta) * p1 = p2
-    If there's no solution, minimize the least-squares residual
-        || rot(k, theta) * p1 - p2 ||
-    
-    The problem is well-posed if p1 and p2 have the same component along k
-    and the same norm. Otherwise, it becomes a least-squares problem.
-    
-    Args:
-        p1: 3x1 CasADi SX/MX vector before rotation
-        p2: 3x1 CasADi SX/MX vector after rotation
-        k: 3x1 CasADi SX/MX rotation axis unit vector
-        
-    Returns:
-        Dictionary with symbolic expressions for solution
-    """
-    
-    # Compute norms
-    norm_p1 = cs.sqrt(cs.dot(p1, p1))
-    norm_p2 = cs.sqrt(cs.dot(p2, p2))
-    
-    # Check for least-squares condition: different norms or different k-components
-    norm_diff = cs.fabs(norm_p1 - norm_p2)
-    
-    # Components along k
-    k_dot_p1 = cs.dot(k, p1)
-    k_dot_p2 = cs.dot(k, p2)
-    k_comp_diff = cs.fabs(k_dot_p1 - k_dot_p2)
-    
-    # Project vectors onto plane perpendicular to k
-    p1_proj = p1 - k_dot_p1 * k
-    p2_proj = p2 - k_dot_p2 * k
-    
-    # Compute projected norms
-    norm_p1_proj = cs.sqrt(cs.dot(p1_proj, p1_proj))
-    norm_p2_proj = cs.sqrt(cs.dot(p2_proj, p2_proj))
-    
-    # Difference in projected magnitudes
-    proj_diff = cs.fabs(norm_p1_proj - norm_p2_proj)
-    
-    # For exact case: normalize projected vectors and use sp_0
-    p1_proj_norm = p1_proj / norm_p1_proj
-    p2_proj_norm = p2_proj / norm_p2_proj
-    
-    # Calculate angle using atan2 approach (similar to sp_0)
-    p_diff = p1_proj_norm - p2_proj_norm
-    p_sum = p1_proj_norm + p2_proj_norm
-    
-    norm_diff_proj = cs.sqrt(cs.dot(p_diff, p_diff))
-    norm_sum_proj = cs.sqrt(cs.dot(p_sum, p_sum))
-    
-    theta = 2 * cs.atan2(norm_diff_proj, norm_sum_proj)
-    
-    # Check sign using cross product
-    cross_p1p2 = cs.cross(p1_proj, p2_proj)
-    sign_check = cs.dot(k, cross_p1p2)
-    
-    # Apply sign correction
-    theta_signed = cs.if_else(sign_check < 0, -theta, theta)
-    
-    # Least-squares condition: significant differences in norms or k-components
-    tolerance = 1e-8
-    is_LS_condition = cs.fmax(norm_diff > tolerance, 
-                             cs.fmax(k_comp_diff > tolerance, proj_diff > tolerance))
-    
-    return {
-        'theta': theta_signed,
-        'is_LS_condition': is_LS_condition,
-        'norm_diff': norm_diff,
-        'proj_diff': proj_diff,
-        'k_comp_diff': k_comp_diff
-    }
-
-def sp_1_numerical(p1, p2, k):
-    """
-    Numerical version of subproblem 1: finds theta such that rot(k, theta)*p1 = p2
-    
-    If the problem is well-posed (same norm and k-component), finds exact solution.
-    Otherwise, finds least-squares solution that minimizes || rot(k, theta)*p1 - p2 ||
-    
-    Args:
-        p1: 3x1 numpy array vector before rotation
-        p2: 3x1 numpy array vector after rotation
-        k: 3x1 numpy array rotation axis unit vector
-        
-    Returns:
-        theta: scalar angle in radians
-        is_LS: boolean flag indicating if solution is least-squares
-    """
-    import numpy as np
-    
-    # Compute norms
-    norm_p1 = np.linalg.norm(p1)
-    norm_p2 = np.linalg.norm(p2)
-    
-    # Check for least-squares condition
-    norm_diff = abs(norm_p1 - norm_p2)
-    
-    # Components along k
-    k_dot_p1 = np.dot(k, p1)
-    k_dot_p2 = np.dot(k, p2)
-    k_comp_diff = abs(k_dot_p1 - k_dot_p2)
-    
-    # Project vectors onto plane perpendicular to k
-    p1_proj = p1 - k_dot_p1 * k
-    p2_proj = p2 - k_dot_p2 * k
-    
-    # Compute projected norms
-    norm_p1_proj = np.linalg.norm(p1_proj)
-    norm_p2_proj = np.linalg.norm(p2_proj)
-    proj_diff = abs(norm_p1_proj - norm_p2_proj)
-    
-    # Check if this is a least-squares problem
-    tolerance = 1e-8
-    is_LS = (norm_diff > tolerance) or (k_comp_diff > tolerance) or (proj_diff > tolerance)
-    
-    # Handle degenerate cases
-    if norm_p1_proj < tolerance or norm_p2_proj < tolerance:
-        return 0.0, is_LS
-    
-    # Normalize projected vectors
-    p1_proj_norm = p1_proj / norm_p1_proj
-    p2_proj_norm = p2_proj / norm_p2_proj
-    
-    # Calculate angle using atan2 approach (similar to sp_0)
-    p_diff = p1_proj_norm - p2_proj_norm
-    p_sum = p1_proj_norm + p2_proj_norm
-    
-    norm_diff_proj = np.linalg.norm(p_diff)
-    norm_sum_proj = np.linalg.norm(p_sum)
-    
-    # Handle edge case where vectors are identical
-    if norm_sum_proj < tolerance:
-        return np.pi, is_LS
-    
-    theta = 2 * np.arctan2(norm_diff_proj, norm_sum_proj)
-    
-    # Check sign using cross product
-    cross_p1p2 = np.cross(p1_proj, p2_proj)
-    sign_check = np.dot(k, cross_p1p2)
-    
-    if sign_check < 0:
-        theta = -theta
-    
-    return theta, is_LS
-
-def build_sp_1_casadi_function():
-    """
-    Build a CasADi Function for sp_1 that can be used in optimization problems.
-    
-    Returns:
-        sp_1_fun: CasADi Function with inputs [p1, p2, k] and outputs [theta, is_LS_condition]
-    """
-    # Define symbolic inputs
-    p1 = cs.SX.sym('p1', 3)
-    p2 = cs.SX.sym('p2', 3)
-    k = cs.SX.sym('k', 3)
-    
-    # Call the symbolic version
-    result = sp_1(p1, p2, k)
-    
-    # Create CasADi function
-    sp_1_fun = cs.Function('sp_1', 
-                          [p1, p2, k],
-                          [result['theta'], 
-                           result['is_LS_condition'],
-                           result['norm_diff'],
-                           result['proj_diff']],
-                          ['p1', 'p2', 'k'],
-                          ['theta', 'is_LS_condition', 'norm_diff', 'proj_diff'])
-    
-    return sp_1_fun
-
-
-def sp_2(p1, p2, k1, k2):
-    """
-    Subproblem 2: Two Circles (Symbolic version using sp_4)
-    
-    [theta1, theta2] = sp_2(p1, p2, k1, k2) finds theta1, theta2 such that
-        rot(k1, theta1)*p1 = rot(k2, theta2)*p2
-    
-    This implementation follows the MATLAB reference that uses sp_4 internally.
-    For least-squares cases, it rescales the vectors to unit length.
-    
-    Args:
-        p1: 3x1 CasADi SX/MX vector
-        p2: 3x1 CasADi SX/MX vector
-        k1: 3x1 CasADi SX/MX vector with norm(k1) = 1
-        k2: 3x1 CasADi SX/MX vector with norm(k2) = 1
-        
-    Returns:
-        Dictionary with symbolic expressions for both exact and LS solutions
-    """
-    
-    # Check for least-squares case: |norm(p1) - norm(p2)| > tolerance
-    norm_p1 = cs.sqrt(cs.dot(p1, p1))
-    norm_p2 = cs.sqrt(cs.dot(p2, p2))
-    norm_diff = cs.fabs(norm_p1 - norm_p2)
-    
-    # Rescale for least-squares case (following MATLAB reference)
-    p1_nrm = p1 / norm_p1
-    p2_nrm = p2 / norm_p2
-    
-    # Compute dot products for sp_4 calls
-    k2_dot_p2_nrm = cs.dot(k2, p2_nrm)
-    k1_dot_p1_nrm = cs.dot(k1, p1_nrm)
-    
-    # Call sp_4 twice as in MATLAB reference
-    # [theta1, t1_is_LS] = sp_4(k2, p1_nrm, k1, dot(k2,p2_nrm))
-    sp4_result_1 = sp_4(k2, p1_nrm, k1, k2_dot_p2_nrm)
-    
-    # [theta2, t2_is_LS] = sp_4(k1, p2_nrm, k2, dot(k1,p1_nrm))
-    sp4_result_2 = sp_4(k1, p2_nrm, k2, k1_dot_p1_nrm)
-    
-    # Extract solutions from sp_4 results
-    # For theta1: use results from first sp_4 call
-    theta1_exact_1 = sp4_result_1['theta_1']
-    theta1_exact_2 = sp4_result_1['theta_2']
-    theta1_ls = sp4_result_1['theta_ls']
-    t1_is_LS_condition = sp4_result_1['is_ls_condition']
-    
-    # For theta2: use results from second sp_4 call (no sign flip initially)
-    theta2_exact_1 = sp4_result_2['theta_1']
-    theta2_exact_2 = sp4_result_2['theta_2']
-    theta2_ls = sp4_result_2['theta_ls']
-    t2_is_LS_condition = sp4_result_2['is_ls_condition']
-    
-    # Handle solution pairing as in MATLAB: theta1 = [theta1(1) theta1(end)]; theta2 = [theta2(end) theta2(1)];
-    # For symbolic case, we'll provide both pairings
-    theta1_paired_1 = theta1_exact_1  # First pairing uses first theta1
-    theta1_paired_2 = theta1_exact_2  # Second pairing uses second theta1
-    theta2_paired_1 = theta2_exact_2  # First pairing uses second theta2 (flipped pairing)
-    theta2_paired_2 = theta2_exact_1  # Second pairing uses first theta2 (flipped pairing)
-    
-    # Determine overall LS condition
-    # Use norm difference and individual sp_4 LS flags
-    tolerance = 1e-8  # MATLAB uses 1e-8
-    norm_diff_significant = norm_diff > tolerance
-    individual_LS = cs.fmax(t1_is_LS_condition, t2_is_LS_condition) > 0
-    overall_is_LS_condition = cs.fmax(norm_diff_significant, individual_LS)
-    
-    # Exact condition: negative means exact solutions exist
-    exact_condition = -overall_is_LS_condition
-    
-    return {
-        'theta1_exact_1': theta1_paired_1,
-        'theta1_exact_2': theta1_paired_2,
-        'theta2_exact_1': theta2_paired_1,
-        'theta2_exact_2': theta2_paired_2,
-        'theta1_ls': theta1_ls,
-        'theta2_ls': theta2_ls,
-        'exact_condition': exact_condition,  # < 0 means exact solutions exist
-        'is_LS_condition': overall_is_LS_condition,  # > 0 means LS solution
-        'norm_diff': norm_diff,
-        't1_is_LS_condition': t1_is_LS_condition,
-        't2_is_LS_condition': t2_is_LS_condition
-    }
-
-def sp_2_numerical(p1, p2, k1, k2):
-    """
-    Numerical version of sp_2 that follows the exact MATLAB reference implementation.
-    
-    [theta1, theta2] = sp_2_numerical(p1, p2, k1, k2) finds theta1, theta2 such that
-        rot(k1, theta1)*p1 = rot(k2, theta2)*p2
-    
-    This implementation follows the MATLAB reference exactly:
-    % Rescale for least-squares case
-    p1_nrm = p1/norm(p1);
-    p2_nrm = p2/norm(p2);
-    
-    [theta1, t1_is_LS] = subproblem.sp_4(k2, p1_nrm, k1, dot(k2,p2_nrm));
-    [theta2, t2_is_LS] = subproblem.sp_4(k1, p2_nrm, k2, dot(k1,p1_nrm));
-    
-    % Make sure solutions correspond by flipping theta2
-    % Also make sure in the edge case that one angle has one solution and the
-    % other angle has two solutions that we duplicate the single solution
-    if numel(theta1)>1 || numel(theta2)>1
-        theta1 = [theta1(1) theta1(end)];
-        theta2 = [theta2(end) theta2(1)];
-    end
-    
-    Args:
-        p1: 3x1 numpy array
-        p2: 3x1 numpy array
-        k1: 3x1 numpy array with norm(k1) = 1
-        k2: 3x1 numpy array with norm(k2) = 1
-        
-    Returns:
-        theta1: numpy array of theta1 solutions
-        theta2: numpy array of theta2 solutions
-        is_LS: boolean flag indicating if solution is least-squares
-    """
-    
-     # Rescale for least-squares case
-    p1_nrm = p1 / np.linalg.norm(p1)
-    p2_nrm = p2 / np.linalg.norm(p2)
-
-    # Call sp_4 twice as in MATLAB reference
-    theta1, t1_is_LS = sp_4_numerical(k2, p1_nrm, k1, np.dot(k2, p2_nrm))
-    theta2, t2_is_LS = sp_4_numerical(k1, p2_nrm, k2, np.dot(k1, p1_nrm))
-
-    # Pair solutions as in MATLAB
-    if len(theta1) > 1 or len(theta2) > 1:
-        # Duplicate if needed
-        if len(theta1) == 1:
-            theta1 = np.array([theta1[0], theta1[0]])
-        if len(theta2) == 1:
-            theta2 = np.array([theta2[0], theta2[0]])
-        # MATLAB pairing: theta1 = [theta1(1) theta1(end)]; theta2 = [theta2(end) theta2(1)];
-        theta1 = np.array([theta1[0], theta1[-1]])
-        theta2 = np.array([theta2[-1], theta2[0]])
-
-    # LS flag
-    is_LS = abs(np.linalg.norm(p1) - np.linalg.norm(p2)) > 1e-8 or t1_is_LS or t2_is_LS
-
-    return theta1, theta2, is_LS
-
-def build_sp_2_casadi_function():
-    """
-    Build a CasADi Function for sp_2 that can be used in optimization problems.
-    
-    Returns:
-        sp_2_fun: CasADi Function with inputs [p1, p2, k1, k2] and outputs for all solution types
-    """
-    # Define symbolic inputs
-    p1 = cs.SX.sym('p1', 3)
-    p2 = cs.SX.sym('p2', 3)
-    k1 = cs.SX.sym('k1', 3)
-    k2 = cs.SX.sym('k2', 3)
-    
-    # Call the symbolic version
-    result = sp_2(p1, p2, k1, k2)
-    
-    # Create CasADi function
-    sp_2_fun = cs.Function('sp_2', 
-                          [p1, p2, k1, k2],
-                          [result['theta1_exact_1'], 
-                           result['theta1_exact_2'],
-                           result['theta2_exact_1'],
-                           result['theta2_exact_2'],
-                           result['theta1_ls'],
-                           result['theta2_ls'],
-                           result['exact_condition'],
-                           result['is_LS_condition']],
-                          ['p1', 'p2', 'k1', 'k2'],
-                          ['theta1_exact_1', 'theta1_exact_2', 
-                           'theta2_exact_1', 'theta2_exact_2',
-                           'theta1_ls', 'theta2_ls', 
-                           'exact_condition', 'is_LS_condition'])
-    
-    return sp_2_fun
-
-
-def sp_3(p1, p2, k, d):
-    """
-    Subproblem 3: Circle and Sphere (Symbolic version)
-    
-    theta = sp_3(p1, p2, k, d) finds theta such that
-        || rot(k, theta)*p1 - p2 || = d
-    If there's no solution, minimize the least-squares residual
-        | || rot(k, theta)*p1 - p2 || - d |
-    
-    If the problem is well-posed, there may be 1 or 2 exact solutions, or 1
-    least-squares solution
-    theta1 and theta2 are column vectors of the solutions
-    
-    The problem is ill-posed if (p1, k) or (p2, k) are parallel
-    
-    Args:
-        p1: 3x1 CasADi SX/MX vector
-        p2: 3x1 CasADi SX/MX vector
-        k: 3x1 CasADi SX/MX vector with norm(k) = 1
-        d: scalar CasADi SX/MX
-        
-    Returns:
-        Dictionary with symbolic expressions for solutions
-    """
-    
-    # Following MATLAB reference: [theta, is_LS] = subproblem.sp_4(p2, p1, k, 1/2 * (dot(p1,p1)+dot(p2,p2)-d^2));
-    # Calculate the parameter for sp_4
-    p1_dot_p1 = cs.dot(p1, p1)
-    p2_dot_p2 = cs.dot(p2, p2)
-    d_squared = d * d
-    sp4_d_param = 0.5 * (p1_dot_p1 + p2_dot_p2 - d_squared)
-    
-    # Call sp_4 with the calculated parameters
-    sp4_result = sp_4(p2, p1, k, sp4_d_param)
-    
-    return {
-        'theta_1': sp4_result['theta_1'],          # First exact solution
-        'theta_2': sp4_result['theta_2'],          # Second exact solution  
-        'theta_ls': sp4_result['theta_ls'],        # Least-squares solution
-        'discriminant': sp4_result['discriminant'], # > 0 means exact solutions exist
-        'is_ls_condition': sp4_result['is_ls_condition'],  # > 0 means LS solution
-        'norm_A_2': sp4_result['norm_A_2'],
-        'b_squared': sp4_result['b_squared'],
-        'sp4_d_param': sp4_d_param  # Store the calculated parameter for debugging
-    }
-
-def sp_3_numerical(p1, p2, k, d):
-    """
-    Numerical version of sp_3 based on the MATLAB reference implementation.
-    
-    Subproblem 3: Circle and sphere
-    
-    theta = sp_3(p1, p2, k, d) finds theta such that
-        || rot(k, theta)*p1 - p2 || = d
-    If there's no solution, minimize the least-squares residual
-        | || rot(k, theta)*p1 - p2 || - d |
-    
-    If the problem is well-posed, there may be 1 or 2 exact solutions, or 1
-    least-squares solution
-    
-    The problem is ill-posed if (p1, k) or (p2, k) are parallel
-    
-    Parameters:
-    -----------
-    p1 : array_like, shape (3,)
-        3D vector
-    p2 : array_like, shape (3,)
-        3D vector
-    k : array_like, shape (3,)
-        3D vector with norm(k) = 1
-    d : float
-        Scalar value (desired distance)
-        
-    Returns:
-    --------
-    theta : ndarray
-        Array of angles (in radians). Shape is (N,) where N is the number of solutions
-    is_LS : bool
-        True if theta is a least-squares solution, False if exact solutions
-    """
-    
-    # Convert inputs to numpy arrays
-    p1 = np.array(p1).reshape(-1)
-    p2 = np.array(p2).reshape(-1)
-    k = np.array(k).reshape(-1)
-    
-    # Validate input dimensions
-    if p1.shape[0] != 3 or p2.shape[0] != 3 or k.shape[0] != 3:
-        raise ValueError("p1, p2, and k must be 3D vectors")
-    
-    # Following MATLAB reference: [theta, is_LS] = subproblem.sp_4(p2, p1, k, 1/2 * (dot(p1,p1)+dot(p2,p2)-d^2));
-    # Calculate the parameter for sp_4
-    p1_dot_p1 = np.dot(p1, p1)
-    p2_dot_p2 = np.dot(p2, p2)
-    d_squared = d * d
-    sp4_d_param = 0.5 * (p1_dot_p1 + p2_dot_p2 - d_squared)
-    
-    # Call sp_4_numerical with the calculated parameters
-    theta, is_LS = sp_4_numerical(p2, p1, k, sp4_d_param)
-    
-    return theta, is_LS
-
-def build_sp_3_casadi_function():
-    """
-    Build a CasADi Function for sp_3 that can be used in optimization problems.
-    
-    Returns:
-        sp_3_fun: CasADi Function with inputs [p1, p2, k, d] and outputs for all solution types
-    """
-    # Define symbolic inputs
-    p1 = cs.SX.sym('p1', 3)
-    p2 = cs.SX.sym('p2', 3)
-    k = cs.SX.sym('k', 3)
-    d = cs.SX.sym('d', 1)
-    
-    # Call the symbolic version
-    result = sp_3(p1, p2, k, d)
-    
-    # Create CasADi function
-    sp_3_fun = cs.Function('sp_3', 
-                          [p1, p2, k, d],
-                          [result['theta_1'], 
-                           result['theta_2'],
-                           result['theta_ls'],
-                           result['discriminant'],
-                           result['is_ls_condition']],
-                          ['p1', 'p2', 'k', 'd'],
-                          ['theta_1', 'theta_2', 'theta_ls', 
-                           'discriminant', 'is_ls_condition'])
-    
-    return sp_3_fun
-
-
-def sp_4(h, p, k, d):
-    """
-    Subproblem 4: Circle and Plane (Symbolic version)
-    
-    theta = sp_4(h, p, k, d) finds theta such that
-        h'*rot(k,theta)*p = d
-    If there's no solution, minimize the least-squares residual
-        | h'*rot(k,theta)*p - d |
-    
-    If the problem is well-posed, there may be 1 or 2 exact solutions, or 1
-    least-squares solution
-    
-    The problem is ill-posed if (p, k) or (h, k) are parallel
-    
-    Args:
-        h: 3x1 CasADi SX/MX vector with norm(h) = 1
-        p: 3x1 CasADi SX/MX vector
-        k: 3x1 CasADi SX/MX vector with norm(k) = 1
-        d: scalar CasADi SX/MX
-        
-    Returns:
-        Dictionary with symbolic expressions for solutions
-    """
-    
-    # Build matrices following MATLAB implementation
-    A_11 = cs.cross(k, p)
-    A_1 = cs.horzcat(A_11, -cs.cross(k, A_11))
-    A = cs.mtimes(h.T, A_1)  # h'*A_1
-    
-    b = d - cs.dot(h, k) * cs.dot(k, p)  # d - h'*k*(k'*p)
-    
-    norm_A_2 = cs.dot(A, A)  # ||A||^2
-    
-    x_ls_tilde = cs.mtimes(A_1.T, h * b)  # A_1'*(h*b)
-    
-    # Check condition for exact vs LS solution
-    discriminant = norm_A_2 - b**2
-    
-    # Exact solutions (when ||A||^2 > b^2)
-    xi = cs.sqrt(discriminant)
-    x_N_prime_tilde = cs.vertcat(A[1], -A[0])  # [A(2); -A(1)]
-    
-    sc_1 = x_ls_tilde + xi * x_N_prime_tilde
-    sc_2 = x_ls_tilde - xi * x_N_prime_tilde
-    
-    theta_1 = cs.atan2(sc_1[0], sc_1[1])
-    theta_2 = cs.atan2(sc_2[0], sc_2[1])
-    
-    # Least-squares solution (when ||A||^2 <= b^2)
-    theta_ls = cs.atan2(x_ls_tilde[0], x_ls_tilde[1])
-    
-    return {
-        'theta_1': theta_1,          # First exact solution
-        'theta_2': theta_2,          # Second exact solution  
-        'theta_ls': theta_ls,        # Least-squares solution
-        'discriminant': discriminant, # > 0 means exact solutions exist
-        'is_ls_condition': -discriminant,  # > 0 means LS solution
-        'norm_A_2': norm_A_2,
-        'b_squared': b**2
-    }
-
-def sp_4_numerical(h, p, k, d):
-    """
-    Numerical version of sp_4 based on the MATLAB reference implementation.
-    
-    Subproblem 4: Circle and plane
-    
-    Finds theta such that h' * rot(k, theta) * p = d
-    If there's no solution, minimize the least-squares residual
-    | h' * rot(k, theta) * p - d |
-    
-    If the problem is well-posed, there may be 1 or 2 exact solutions, or 1
-    least-squares solution
-    
-    The problem is ill-posed if (p, k) or (h, k) are parallel
-    
-    Parameters:
-    -----------
-    h : array_like, shape (3,)
-        3D vector with norm(h) = 1
-    p : array_like, shape (3,)
-        3D vector
-    k : array_like, shape (3,)
-        3D vector with norm(k) = 1
-    d : float
-        Scalar value
-        
-    Returns:
-    --------
-    theta : ndarray
-        Array of angles (in radians). Shape is (N,) where N is the number of solutions
-    is_LS : bool
-        True if theta is a least-squares solution, False if exact solutions
-    """
-    
-    # Convert inputs to numpy arrays and ensure they're column vectors
-    h = np.array(h).reshape(-1)
-    p = np.array(p).reshape(-1)
-    k = np.array(k).reshape(-1)
-    
-    # Validate input dimensions
-    if h.shape[0] != 3 or p.shape[0] != 3 or k.shape[0] != 3:
-        raise ValueError("h, p, and k must be 3D vectors")
-    
-    # A_11 = cross(k, p)
-    A_11 = np.cross(k, p)
-    
-    # A_1 = [A_11 -cross(k, A_11)]
-    # This creates a 3x2 matrix where first column is A_11 and second column is -cross(k, A_11)
-    A_1 = np.column_stack([A_11, -np.cross(k, A_11)])
-    
-    # A = h' * A_1 (this is a 1x2 matrix, but we'll treat as 1D array)
-    A = h.T @ A_1  # This gives us a (2,) array
-    
-    # b = d - h' * k * (k' * p)
-    b = d - np.dot(h, k) * np.dot(k, p)
-    
-    # norm_A_2 = dot(A, A) = ||A||^2
-    norm_A_2 = np.dot(A, A)
-    
-    # x_ls_tilde = A_1' * (h * b)
-    x_ls_tilde = A_1.T @ (h * b)  # This gives us a (2,) array
-    
-    # Check if we have exact solutions or need least-squares
-    if norm_A_2 > b**2:
-        # Two exact solutions case
-        xi = np.sqrt(norm_A_2 - b**2)
-        
-        # x_N_prime_tilde = [A(2); -A(1)] (swap and negate first component)
-        x_N_prime_tilde = np.array([A[1], -A[0]])
-        
-        # Two solution candidates
-        sc_1 = x_ls_tilde + xi * x_N_prime_tilde
-        sc_2 = x_ls_tilde - xi * x_N_prime_tilde
-        
-        # Compute angles using atan2
-        theta = np.array([np.arctan2(sc_1[0], sc_1[1]), 
-                         np.arctan2(sc_2[0], sc_2[1])])
-        is_LS = False
-        
-    else:
-        # Least-squares solution case
-        theta = np.array([np.arctan2(x_ls_tilde[0], x_ls_tilde[1])])
-        is_LS = True
-    
-    return theta, is_LS
-
-def build_sp_4_casadi_function():
-    """
-    Build a CasADi Function for sp_4 that can be used in optimization problems.
-    
-    Returns:
-        sp_4_fun: CasADi Function with inputs [h, p, k, d] and outputs for all solution types
-    """
-    # Define symbolic inputs
-    h = cs.SX.sym('h', 3)
-    p = cs.SX.sym('p', 3)
-    k = cs.SX.sym('k', 3)
-    d = cs.SX.sym('d', 1)
-    
-    # Call the symbolic version
-    result = sp_4(h, p, k, d)
-    
-    # Create CasADi function
-    sp_4_fun = cs.Function('sp_4', 
-                          [h, p, k, d],
-                          [result['theta_1'], 
-                           result['theta_2'],
-                           result['theta_ls'],
-                           result['discriminant'],
-                           result['is_ls_condition']],
-                          ['h', 'p', 'k', 'd'],
-                          ['theta_1', 'theta_2', 'theta_ls', 
-                           'discriminant', 'is_ls_condition'])
-    
-    return sp_4_fun
-
-
-def rot(axis, angle):
-    """
-    Create a rotation matrix using Rodrigues' formula in CasADi.
-    
-    Args:
-        axis: 3x1 CasADi SX/MX vector (unit vector)
-        angle: scalar CasADi SX/MX angle in radians
-        
-    Returns:
-        3x3 CasADi SX/MX rotation matrix
-    """
-    # Rodrigues' formula: R = I + sin(θ)[k]× + (1-cos(θ))[k]×²
-    c = cs.cos(angle)
-    s = cs.sin(angle)
-    v = 1 - c
-    
-    # Skew-symmetric matrix [k]×
-    k_skew = cs.vertcat(
-        cs.horzcat(0, -axis[2], axis[1]),
-        cs.horzcat(axis[2], 0, -axis[0]),
-        cs.horzcat(-axis[1], axis[0], 0)
-    )
-    
-    # Identity matrix
-    I = cs.SX.eye(3)
-    
-    # Rodrigues' formula
-    R = I + s * k_skew + v * cs.mtimes(k_skew, k_skew)
-    
-    return R
-
-def rot_numerical(axis, angle):
-    """
-    Numerical version of rotation matrix using Rodrigues' formula.
-    
-    Args:
-        axis: 3x1 numpy array (unit vector)
-        angle: scalar angle in radians
-        
-    Returns:
-        3x3 numpy rotation matrix
-    """
-    import numpy as np
-    
-    c = np.cos(angle)
-    s = np.sin(angle)
-    v = 1 - c
-    
-    # Skew-symmetric matrix
-    k_skew = np.array([[0, -axis[2], axis[1]],
-                       [axis[2], 0, -axis[0]],
-                       [-axis[1], axis[0], 0]])
-    
-    # Rodrigues' formula
-    R = np.eye(3) + s * k_skew + v * k_skew @ k_skew
-    
-    return R
 
 def IK_2R_2R_3R_casadi(R_0_7, p_0_T, sew_stereo, psi, model_transforms):
     """
@@ -1272,9 +466,495 @@ def build_IK_2R_2R_3R_casadi_function(model_transforms):
     return ik_fun
 
 
+def IK_2R_2R_3R_auto_elbow(R_0_7, p_0_T, sew_stereo, model_transforms, q_prev=None):
+    """
+    Numerical implementation of IK_2R_2R_3R inverse kinematics function.
+    Uses frame transformations from Pinocchio model instead of kin_P and kin_H.
+    Automatically determines elbow position based on the end-effector position.
+    Automatically stabilizes singularity solutions. 
+    TODO: haven't solved subproblem 4 for elbow angle yet, might need to redefine
+    an SEW system.
+    
+    Args:
+        R_0_7: 3x3 numpy array - desired end-effector orientation
+        p_0_T: 3x1 numpy array - desired end-effector position
+        sew_stereo: SEWStereo instance for spherical kinematics,
+            Assume the following setup for humanoid bimanual:
+            r, v = np.array([1, 0, 0]), np.array([0, 1, 0])
+            sew_stereo = SEWStereo(r, v)
+        model_transforms: dict from get_frame_transforms_from_pinocchio() containing:
+            - 'R': list of 3x3 rotation matrices [R_0_1, R_1_2, ..., R_6_7, R_7_T]
+            - 'p': list of 3x1 position vectors [p_0_1, p_1_2, ..., p_6_7, p_7_T]
+            - 'joint_names': list of joint/frame names
+        q_prev: if None, then assume Right arm configuration, return all solutions.
+
+    Returns:
+        Q: numpy array of joint angle solutions (7 x num_solutions)
+        is_LS_vec: list of boolean flags indicating LS solutions
+    """
+    
+    Q = []
+    is_LS_vec = []
+
+    # Extract frame transformations
+    R_local = model_transforms['R']
+    p_local = model_transforms['p']
+    
+    # Build position vectors (equivalent to kin_P columns)
+    # p_01 = origin (0,0,0) since first frame is at base
+    p_01, R_01 = p_local[0], R_local[0]  # in base frame
+    p_12, R_12 = p_local[1], R_local[1]  # in 1 frame
+    p_23, R_23 = p_local[2], R_local[2]  # in 2 frame
+    p_34, R_34 = p_local[3], R_local[3]  # in 3 frame
+    p_45, R_45 = p_local[4], R_local[4]  # in 4 frame
+    p_56, R_56 = p_local[5], R_local[5]  # in 5 frame
+    p_67, R_67 = p_local[6], R_local[6]  # in 6 frame
+    p_7T, R_7T = p_local[7], R_local[7]  # in 7 frame
+
+    
+    ##### Notation on position #######
+    # p_ij: position vector from frame i to j in local frame i with at q_i, q_i+1,...q_j-1 = 0
+    # p_ij_0: position vector from frame i to j in base frame 0
+    # p_i_j: position vector with q_i, q_i+1,...q_j-1 = (the actual value) calculated in "base frame" by default
+    # p_i_j_k: position vector with q_i, q_i+1,...q_j-1 = (the actual value) calculated in "frame k"
+    ##################################
+
+    # Find wrist position in base frame
+    p_7_T_0 = R_0_7 @ p_7T
+    p_W7 = np.zeros(3) 
+    p_W7[1] = p_67[1]      # wrist at the intersection of h6 and h7
+    p_W_7_0 = R_0_7 @ R_67.T @ p_W7 # vector at q6 = 0
+    W = p_0_T - (p_W_7_0 + p_7_T_0)  # Wrist position in base frame between joint 6 and 7
+
+    # Find shoulder position (fixed in base frame)
+    p_12_0 = R_01 @ p_12 # vector at q1 = 0
+    p_1_S_0 = np.zeros(3)  
+    p_1_S_0[2] = p_12_0[2]  # shoulder at the intersection of h1 and h2
+    S = p_01+p_1_S_0  # Shoulder position in base frame between joint 1 and 2
+
+    ### Important bug diery ###
+    # the elbow was originally located at exact joint 4. The final solution was always off in lateral (-y) direction by a very small amount.
+    # for precisely half the solutions.This is caused by the offset in -y direction between the joint 1 and joint 3 at zero configuration.
+    # the solution is to express the elbow position at the intersection of h3 and h4, not at joint 4.
+
+    # expressing the distance from shoulder to elbow (at the intersection of h3 and h4)
+    p_S2_0 = p_12_0 - p_1_S_0  # Vector from shoulder to joint 2
+    R_02 = R_01 @ R_12
+    R_03 = R_02 @ R_23 
+    p_3E = np.zeros(3)
+    p_3E[2] = p_34[2]  # elbow at the intersection of h3 and h4
+    p_2E_0 = R_02 @ p_23 + R_03 @ p_3E  # vector at q2 = 0, q3 = 0
+    d_SE_vec = p_S2_0 + p_2E_0  # Sum from shoulder to elbow
+    d_SE = np.linalg.norm(d_SE_vec)
+
+    # expressing the distance from elbow to wrist
+    R_04 = R_03 @ R_34
+    R_05 = R_04 @ R_45
+    R_06 = R_05 @ R_56
+    p_67_0 = R_06 @ p_67 
+    p_W7_0 = np.zeros(3)
+    p_W7_0[2] = p_67_0[2]  # wrist at the intersection of h6 and h7
+    # vector at q4 = 0, q5 = 0, q6 = 0
+    p_6W_0 = p_67_0 - p_W7_0
+    p_E4_4 = R_34.T @ (p_34 - p_3E)  # Vector from elbow to joint 4
+    p_E6_0 = R_04 @ (p_E4_4 + p_45) + R_05 @ p_56 # vector at q4 = 0, q5 = 0
+    d_EW_vec = p_E6_0 + p_6W_0  # Sum from elbow to wrist
+    d_EW = np.linalg.norm(d_EW_vec)
+
+    # Vector from shoulder to wrist
+    p_S_W = W - S
+    e_S_W = p_S_W / np.linalg.norm(p_S_W)
+    
+    # create a fake elbow in -y -z direction of the T frame
+    E_fake = np.array([0, -0.5, -0.3])  # Fake elbow position in base frame
+    R_0_T = R_0_7 @ R_7T  # Rotation matrix from base to T frame
+    E_fake_0 = p_0_T + R_0_T @ E_fake  # Fake elbow position in 0 frame
+    psi_auto = sew_stereo.fwd_kin(S, E_fake_0, W)  # Calculate stereo angle for fake elbow
+
+    # Use SEW inverse kinematics
+    e_CE, n_SEW = sew_stereo.inv_kin(S, W, psi_auto)
+    
+    # Use subproblem 3 to find theta_SEW
+    theta_SEW, theta_SEW_is_LS = sp_3_numerical(d_SE * e_S_W, p_S_W, n_SEW, d_EW)
+    
+    # Pick theta_SEW > 0 for correct half-plane
+    if len(theta_SEW) > 1:
+        q_SEW = np.max(theta_SEW)
+    else:
+        q_SEW = theta_SEW[0]
+    
+    # Calculate elbow position in base frame
+    p_S_E = rot_numerical(n_SEW, q_SEW) @ (d_SE * e_S_W)  # this is actual vector in base frame 
+    E = p_S_E + S
+    
+    # Joint axes projected to appropriate frames
+    # All joint axes are z-direction (0,0,1) in their local frames
+    ez = np.array([0, 0, 1])
+    
+    # h_1: joint 1 axis in joint 1 frame
+    h_1 = ez  # Already in 1 frame
+    
+    # h_2: joint 2 axis rotated to joint 1 frame
+    h_2 = R_12 @ ez
+
+    p_S_E_1 = R_01.T @ p_S_E  # desired Shoulder to elbow vector in 1 frame
+    p_SE_1 = R_01.T @ d_SE_vec  # q1,q2 zero config shoulder to elbow vector in 1 frame
+
+    t1, t2, t12_is_ls = sp_2_numerical(p_S_E_1, p_SE_1, -h_1, h_2)
+
+    for i_q12 in range(len(t1)):
+        q1 = t1[i_q12]
+        q2 = t2[i_q12]
+        
+        # Build rotation matrix up to joint 2
+        R_0_1 = R_01 @ rot_numerical(ez, q1)
+        R_1_2 = R_12 @ rot_numerical(ez, q2) 
+        R_0_2 = R_0_1 @ R_1_2
+        
+        # h_3 and h_4: joints 3,4 axes projected to frame 3
+        h_3 = ez  # Joint 3 axis in 3 frame
+        h_4 = R_34 @ ez  # Joint 4 axis in 3 frame
+
+        p_E_W_3 = (R_0_2 @ R_23).T @ (W - E) # desired elbow to wrist vector in 3 frame
+        p_EW_3 = R_03.T @ d_EW_vec  # q3,q4 zero config elbow to wrist vector in 3 frame
+
+        t3, t4, t34_is_ls = sp_2_numerical(p_E_W_3, p_EW_3, -h_3, h_4)
+
+        for i_q34 in range(len(t3)):
+            q3 = t3[i_q34]
+            q4 = t4[i_q34]
+            
+            # Build rotation matrix up to joint 4
+            R_2_3 = R_23 @ rot_numerical(ez, q3)  # h_3 in its local frame
+            R_3_4 = R_34 @ rot_numerical(ez, q4)  # h_4 in its local frame
+            R_0_4 = R_0_2 @ R_2_3 @ R_3_4
+            
+            # h_5, h_6, h_7: joints 5,6,7 axes projected to frame 5
+            h_5 = ez  # Joint 5 axis in 5 frame
+            h_6 = R_56 @ ez  # Joint 6 axis in 5 frame
+
+            h_7_act_5 = (R_0_4 @ R_45).T @ R_0_7 @ ez  # Joint 7 axis in joint 5 frame
+            h_7_zero_5 = R_56 @ R_67 @ ez  # Joint 7 axis in joint 6 frame
+
+            t5, t6, t56_is_ls = sp_2_numerical(h_7_act_5, h_7_zero_5, -h_5, h_6)
+
+            for i_q56 in range(len(t5)):
+                q5 = t5[i_q56]
+                q6 = t6[i_q56]
+                
+                # Build rotation matrix up to joint 6
+                R_4_5 = R_45 @ rot_numerical(ez, q5)  # h_5 in its local frame
+                R_5_6 = R_56 @ rot_numerical(ez, q6)  # h_6 in its local frame
+                R_0_6 = R_0_4 @ R_4_5 @ R_5_6
+                
+                # Projecting everying to joint 7 frmae
+                h_7_final = ez  # Joint 6 axis for subproblem 1
+
+                h_6_act_7 = (R_0_7).T @ R_0_6 @ ez
+                h_6_zero_7 = R_67.T @ ez  # Joint 7 axis for subproblem 1
+
+                q7, q7_is_ls = sp_1_numerical(h_6_zero_7, h_6_act_7, -h_7_final)
+                # Combine solution
+                q_i = np.array([q1, q2, q3, q4, q5, q6, q7])
+                Q.append(q_i)
+                
+                # Combine LS flags
+                overall_is_ls = theta_SEW_is_LS or t12_is_ls or t34_is_ls or t56_is_ls or q7_is_ls
+                is_LS_vec.append(overall_is_ls)
+    
+    return np.column_stack(Q) if Q else np.array([]).reshape(7, 0), is_LS_vec
+
+
+def IK_2R_2R_3R_SEW(S_human, E_human, W_human, model_transforms, sol_ids=None):
+    """
+    Numerical inverse kinematics function that matches robot arm SEW (Shoulder-Elbow-Wrist) 
+    angles with human poses in a forward fashion.
+    
+    The approach:
+    1. Joints 1,2: Use subproblem 2 to orient shoulder segment toward human shoulder-elbow direction
+    2. Joints 3,4: Use subproblem 2 to orient elbow segment toward human elbow-wrist direction  
+    3. Joints 5,6,7: Set to zeros for now (can be extended for wrist orientation matching)
+    
+    Args:
+        S_human: 3x1 numpy array - human shoulder position in robot base frame
+        E_human: 3x1 numpy array - human elbow position in robot base frame
+        W_human: 3x1 numpy array - human wrist position in robot base frame
+        model_transforms: dict from get_frame_transforms_from_pinocchio() containing:
+            - 'R': list of 3x3 rotation matrices [R_0_1, R_1_2, ..., R_6_7, R_7_T]
+            - 'p': list of 3x1 position vectors [p_0_1, p_1_2, ..., p_6_7, p_7_T]
+            - 'joint_names': list of joint/frame names
+        sol_ids: dict with solution indices for consistent solution selection:
+            - 'q12_idx': index for joints 1,2 solution (0 or 1)
+            - 'q34_idx': index for joints 3,4 solution (0 or 1)
+            If None, returns all solutions
+    
+    Returns:
+        Q: numpy array of joint angle solutions (7 x num_solutions)
+        is_LS_vec: list of boolean flags indicating LS solutions
+        human_vectors: dict with human pose information
+        sol_ids_used: dict with the solution indices actually used (for initialization)
+    """
+    
+    Q = []
+    is_LS_vec = []
+    sol_ids_used = {'q12_idx': [], 'q34_idx': []}
+    
+    # Extract frame transformations
+    R_local = model_transforms['R']
+    p_local = model_transforms['p']
+    
+    # Build position vectors following the standard implementation
+    p_01, R_01 = p_local[0], R_local[0]  # base to joint 1
+    p_12, R_12 = p_local[1], R_local[1]  # joint 1 to joint 2
+    p_23, R_23 = p_local[2], R_local[2]  # joint 2 to joint 3
+    p_34, R_34 = p_local[3], R_local[3]  # joint 3 to joint 4
+    p_45, R_45 = p_local[4], R_local[4]  # joint 4 to joint 5
+    p_56, R_56 = p_local[5], R_local[5]  # joint 5 to joint 6
+    p_67, R_67 = p_local[6], R_local[6]  # joint 6 to joint 7
+    p_7T, R_7T = p_local[7], R_local[7]  # joint 7 to end-effector
+    
+    # Calculate human pose vectors
+    SE_human = E_human - S_human  # Human shoulder to elbow vector
+    EW_human = W_human - E_human  # Human elbow to wrist vector
+    SW_human = W_human - S_human  # Human shoulder to wrist vector
+    
+    # Normalize human vectors
+    SE_human_norm = SE_human / (np.linalg.norm(SE_human) + 1e-8)
+    EW_human_norm = EW_human / (np.linalg.norm(EW_human) + 1e-8)
+    SW_human_norm = SW_human / (np.linalg.norm(SW_human) + 1e-8)
+
+    # Robot shoulder position (intersection of joint 1 and 2 axes)
+    p_12_0 = R_01 @ p_12  # vector at q1 = 0
+    p_1_S_0 = np.zeros(3)
+    p_1_S_0[2] = p_12_0[2]  # shoulder at the intersection of h1 and h2
+    S_robot = p_01 + p_1_S_0  # Robot shoulder position in base frame
+    
+    # Robot shoulder-to-elbow vector at zero configuration
+    p_S2_0 = p_12_0 - p_1_S_0  # Vector from shoulder to joint 2
+    R_02 = R_01 @ R_12
+    R_03 = R_02 @ R_23
+    p_3E = np.zeros(3)
+    p_3E[2] = p_34[2]  # elbow at the intersection of h3 and h4
+    p_2E_0 = R_02 @ p_23 + R_03 @ p_3E  # vector at q2 = 0, q3 = 0
+    SE_robot_zero = p_S2_0 + p_2E_0  # Robot shoulder-to-elbow vector at zero config
+    E_robot = S_robot + SE_robot_zero # Robot elbow position at zero configuration in base frame
+    
+    p_E4_0 = R_03 @ (p_34 - p_3E)  # Vector from elbow to joint 4 at zero config
+    
+    # Robot elbow-to-wrist vector at zero configuration
+    R_04 = R_03 @ R_34
+    R_05 = R_04 @ R_45
+    R_06 = R_05 @ R_56
+    p_45_0 = R_04 @ p_45
+    p_56_0 = R_05 @ p_56
+    p_67_0 = R_06 @ p_67
+    p_W7_0 = np.zeros(3)
+    p_W7_0[2] = p_67_0[2]  # wrist at the intersection of h6 and h7
+    p_6W_0 = p_67_0 - p_W7_0
+    EW_robot_zero = p_E4_0 + p_45_0 + p_56_0 + p_6W_0  # Robot elbow-to-wrist vector at zero config
+
+
+    
+    # Joint axes (all joints rotate about z-axis in their local frames)
+    ez = np.array([0, 0, 1])
+    
+    # === STAGE 1: Solve joints 1,2 to match shoulder-elbow direction ===
+    # Project human SE vector to joint 1 frame for subproblem 2
+    SE_human_1 = R_01.T @ SE_human_norm  # Human SE vector in joint 1 frame
+    SE_robot_1 = R_01.T @ SE_robot_zero  # Robot SE vector in joint 1 frame at zero config
+    SE_robot_1_norm = SE_robot_1 / np.linalg.norm(SE_robot_1)
+    
+    # Joint axes in joint 1 frame
+    h_1 = ez  # Joint 1 axis in joint 1 frame
+    h_2 = R_12 @ ez  # Joint 2 axis in joint 1 frame
+    
+    # Use subproblem 2 to find q1, q2 that align robot SE with human SE
+    theta1_12, theta2_12, is_LS_12 = sp_2_numerical(SE_human_1, SE_robot_1_norm, -h_1, h_2)
+    
+    # Ensure we have arrays (sp_2_numerical might return scalars)
+    if np.isscalar(theta1_12):
+        theta1_12 = np.array([theta1_12])
+    if np.isscalar(theta2_12):
+        theta2_12 = np.array([theta2_12])
+    
+    # If sol_ids provided, use specific solution indices
+    if sol_ids is not None and 'q12_idx' in sol_ids:
+        q12_indices = [sol_ids['q12_idx']]
+    else:
+        q12_indices = range(len(theta1_12))
+    
+    # Iterate through joint 1,2 solutions
+    for i in q12_indices:
+        if i >= len(theta1_12):
+            continue  # Skip if index out of range
+            
+        q1 = theta1_12[i]
+        q2 = theta2_12[i]
+        
+        # Build rotation matrices up to joint 2
+        R_0_1 = R_01 @ rot_numerical(ez, q1)  # Joint 1 rotation
+        R_1_2 = R_12 @ rot_numerical(ez, q2)  # Joint 2 rotation
+        R_0_2 = R_0_1 @ R_1_2
+        
+        # === STAGE 2: Solve joints 3,4 to match elbow-wrist direction ===
+        # Calculate actual robot elbow position after applying q1, q2
+        p_S2_actual = R_0_1 @ (p_12 - p_1_S_0)  # Actual vector from shoulder to joint 2
+        p_2E_actual = R_0_2 @ p_23 + (R_0_2 @ R_23) @ p_3E
+        E_robot_actual = S_robot + p_S2_actual + p_2E_actual  # Actual robot elbow position
+        
+        # Project human EW vector to joint 3 frame for subproblem 2
+        R_0_3 = R_0_2 @ R_23
+        EW_human_3 = R_0_3.T @ EW_human_norm  # Human EW vector in joint 3 frame
+        EW_robot_3 = R_03.T @ EW_robot_zero  # Robot EW vector in joint 3 frame at zero config
+        EW_robot_3_norm = EW_robot_3 / np.linalg.norm(EW_robot_3)
+        
+        # Joint axes in joint 3 frame
+        h_3 = ez  # Joint 3 axis in 3 frame
+        h_4 = R_34 @ ez  # Joint 4 axis in 3 frame
+        
+        # Use subproblem 2 to find q3, q4 that align robot EW with human EW
+        theta1_34, theta2_34, is_LS_34 = sp_2_numerical(EW_human_3, EW_robot_3_norm, -h_3, h_4)
+        
+        # Ensure we have arrays
+        if np.isscalar(theta1_34):
+            theta1_34 = np.array([theta1_34])
+        if np.isscalar(theta2_34):
+            theta2_34 = np.array([theta2_34])
+        
+        # If sol_ids provided, use specific solution indices
+        if sol_ids is not None and 'q34_idx' in sol_ids:
+            q34_indices = [sol_ids['q34_idx']]
+        else:
+            q34_indices = range(len(theta1_34))
+        
+        # Iterate through joint 3,4 solutions
+        for j in q34_indices:
+            if j >= len(theta1_34):
+                continue  # Skip if index out of range
+                
+            q3 = theta1_34[j]
+            q4 = theta2_34[j]
+            
+            # === STAGE 3: Set joints 5,6,7 to zeros ===
+            # For now, we set the wrist joints to zero
+            # This can be extended later to match human wrist orientation
+            q5 = 0.0
+            q6 = 0.0
+            q7 = 0.0
+            
+            # Combine joint angles
+            q_solution = np.array([q1, q2, q3, q4, q5, q6, q7])
+            Q.append(q_solution)
+            
+            # Combine LS flags (OR operation)
+            overall_is_ls = is_LS_12 or is_LS_34
+            is_LS_vec.append(overall_is_ls)
+            
+            # Store solution indices used
+            sol_ids_used['q12_idx'].append(i)
+            sol_ids_used['q34_idx'].append(j)
+    
+    # Convert to numpy array if we have solutions
+    if Q:
+        Q = np.column_stack(Q)  # 7 x num_solutions
+    else:
+        Q = np.zeros((7, 0))  # Empty array with correct shape
+    
+    # Store human vectors for analysis
+    human_vectors = {
+        'S_human': S_human,
+        'E_human': E_human,
+        'W_human': W_human,
+        'SE_human': SE_human,
+        'EW_human': EW_human,
+        'SW_human': SW_human,
+        'SE_human_norm': SE_human_norm,
+        'EW_human_norm': EW_human_norm,
+        'SW_human_norm': SW_human_norm,
+        'S_robot': S_robot,
+        'SE_robot_zero': SE_robot_zero,
+        'EW_robot_zero': EW_robot_zero
+    }
+    
+    return Q, is_LS_vec, human_vectors, sol_ids_used
+
+
+def get_robot_SEW_from_q(q, model):
+    """
+    Extract robot SEW (Shoulder, Elbow, Wrist) positions from joint angles.
+    
+    Args:
+        q: 7x1 numpy array of joint angles
+        model_transforms: dict from get_frame_transforms_from_pinocchio() containing:
+            - 'R': list of 3x3 rotation matrices [R_0_1, R_1_2, ..., R_6_7, R_7_T]
+            - 'p': list of 3x1 position vectors [p_0_1, p_1_2, ..., p_6_7, p_7_T]
+            - 'joint_names': list of joint/frame names
+    
+    Returns:
+        dict with 'S', 'E', 'W' positions in robot base frame
+    """
+    
+    model_transforms = opt.get_frame_transforms_from_pinocchio(model)
+    fk_fun, _, _, _, _, _ = opt.build_casadi_kinematics_dynamics(model, 'tool_frame')
+    fk_joint3_fun, _, _, _, _, _ = opt.build_casadi_kinematics_dynamics(model, 'joint_3')
+    
+    # Extract frame transformations
+    R_local = model_transforms['R']
+    p_local = model_transforms['p']
+    
+    # Build position vectors
+    p_01, R_01 = p_local[0], R_local[0]  # in base frame
+    p_12, R_12 = p_local[1], R_local[1]  # in 1 frame
+    p_23, R_23 = p_local[2], R_local[2]  # in 2 frame
+    p_34, R_34 = p_local[3], R_local[3]  # in 3 frame
+    p_45, R_45 = p_local[4], R_local[4]  # in 4 frame
+    p_56, R_56 = p_local[5], R_local[5]  # in 5 frame
+    p_67, R_67 = p_local[6], R_local[6]  # in 6 frame
+    p_7T, R_7T = p_local[7], R_local[7]  # in 7 frame
+
+    # Get current end-effector pose from forward kinematics
+    T_0_T = fk_fun(q).full()  # 4x4 homogeneous matrix
+    R_0_T = T_0_T[:3, :3]
+    p_0_T = T_0_T[:3, 3]
+    
+    # Calculate R_0_7 from end-effector pose
+    R_0_7 = R_0_T @ R_7T.T  # R_0_T @ R_T_7
+
+    # Find shoulder position (fixed in base frame)
+    p_12_0 = R_01 @ p_12  # vector at q1 = 0
+    p_1_S_0 = np.zeros(3)  
+    p_1_S_0[2] = p_12_0[2]  # shoulder at the intersection of h1 and h2
+    S = p_01 + p_1_S_0  # Shoulder position in base frame between joint 1 and 2
+
+    # Get elbow position using forward kinematics to joint 3
+    T_0_3 = fk_joint3_fun(q).full()
+    R_0_3 = T_0_3[:3, :3]
+    p_0_3 = T_0_3[:3, 3]
+
+    # Calculate elbow position at intersection of h3 and h4
+    p_3E = np.zeros(3)
+    p_3E[2] = p_34[2]  # elbow at the intersection of h3 and h4
+    p_3_E_0 = R_0_3 @ p_3E  # elbow position in base frame
+    E = p_0_3 + p_3_E_0
+
+    # Find wrist position in base frame
+    p_7_T_0 = R_0_7 @ p_7T
+    p_6_7_0 = R_0_7 @ R_67.T @ p_67  # vector at q6 = 0
+    p_W_7_0 = np.zeros(3) 
+    p_W_7_0[2] = p_6_7_0[2]  # wrist at the intersection of h6 and h7
+    W = p_0_T - (p_W_7_0 + p_7_T_0)  # Wrist position in base frame between joint 6 and 7
+    
+    return {
+        'S': S,
+        'E': E,
+        'W': W
+    }
+
+
 def filter_and_select_closest_solution(Q, is_LS_vec, q_prev=None):
     """
     Filter out invalid solutions based on joint limits and return the closest one to a previous pose.
+    If the closest solution is outside joint limits, return q_prev.
     
     Args:
         Q: numpy array of joint angle solutions (7 x num_solutions)
@@ -1282,9 +962,9 @@ def filter_and_select_closest_solution(Q, is_LS_vec, q_prev=None):
         q_prev: 7x1 numpy array of previous joint configuration (optional)
         
     Returns:
-        q_best: 7x1 numpy array of best solution (or None if no valid solutions)
-        is_LS_best: boolean flag for the best solution
-        valid_count: number of valid solutions found
+        q_best: 7x1 numpy array of best solution (or q_prev if closest is invalid, or None if q_prev is None)
+        is_LS_best: boolean flag for the best solution (or None if q_prev is used/None)
+        joint_limit_violated: boolean flag indicating joint limit violations caused fallback behavior
     """
     
     # Define joint limits
@@ -1293,30 +973,17 @@ def filter_and_select_closest_solution(Q, is_LS_vec, q_prev=None):
     q_upper = np.array([ rev_lim,  2.41,  rev_lim,  2.66,  rev_lim,  2.23,  rev_lim])
     
     if Q.shape[1] == 0:
-        return None, None, 0
+        return None, None, False
     
-    # Filter valid solutions based on joint limits
-    valid_indices = []
-    for i in range(Q.shape[1]):
-        q_i = Q[:, i]
-        # Check if all joints are within limits
-        if np.all(q_i >= q_lower) and np.all(q_i <= q_upper):
-            valid_indices.append(i)
-    
-    if len(valid_indices) == 0:
-        print("No valid solutions found within joint limits!")
-        return None, None, 0
-    
-    # If no previous pose provided, return the first valid solution
+    # If no previous pose provided, return None
     if q_prev is None:
-        best_idx = valid_indices[0]
-        return Q[:, best_idx], is_LS_vec[best_idx], len(valid_indices)
+        return None, None, True  # joint_limit_violated = True (no q_prev, no valid solution)
     
-    # Find the solution closest to the previous pose
+    # Find the solution closest to the previous pose (regardless of joint limits)
     min_distance = float('inf')
-    best_idx = valid_indices[0]
+    best_idx = 0
     
-    for idx in valid_indices:
+    for idx in range(Q.shape[1]):
         q_i = Q[:, idx]
         # Calculate distance using L2 norm
         q_diff = q_i - q_prev
@@ -1328,7 +995,18 @@ def filter_and_select_closest_solution(Q, is_LS_vec, q_prev=None):
             min_distance = distance
             best_idx = idx
     
-    return Q[:, best_idx], is_LS_vec[best_idx], len(valid_indices)
+    # Get the closest solution
+    q_closest = Q[:, best_idx]
+    
+    # Check if the closest solution is within joint limits
+    within_limits = np.all(q_closest >= q_lower) and np.all(q_closest <= q_upper)
+    
+    if within_limits:
+        # Return the closest valid solution
+        return q_closest, is_LS_vec[best_idx], False  # joint_limit_violated = False
+    else:
+        # Return q_prev as fallback
+        return q_prev, None, True  # joint_limit_violated = True (used q_prev due to limits)
 
 
 def filter_symbolic_solutions(solutions, is_LS_flags, joint_limits=None, max_solutions=8):
@@ -1393,8 +1071,6 @@ def filter_symbolic_solutions(solutions, is_LS_flags, joint_limits=None, max_sol
     
     return filtered_solutions, filtered_is_LS
 
-
-# ...existing code...
 
 def get_elbow_angle_kinova(q, model, sew_stereo):
     """
@@ -1485,17 +1161,22 @@ if __name__ == "__main__":
     # Build forward kinematics function from optimizing_gen3_arm
     fk_fun, pos_fun, jac_fun, M_fun, C_fun, G_fun = opt.build_casadi_kinematics_dynamics(model, 'tool_frame')
     # Create test data
-    q_init = np.radians([   0.,   15., -180., -130.,    0.,  -35.,   90.])
+    # q_init = np.radians([   0.,   15., -180., -130.,    0.,  -35.,   90.])
     # q_init = np.radians([   90.,   90., -90., 90.,    0.,  0.,   90.])
-    # q_init = np.array([1.571, 1.571, -1.571, 1.571, 0.000, 0.524, 1.571])
-    # q_init = np.radians([0, 0, 0, 0, 0, 0, 0])  # Use zero angles for testing
+    q_init = np.array([1.571, 1.571, -1.571, 1.571, 0.000, 0.524, 1.571])
+    # q_init = np.radians([0, 45, 0, 0, 0, 0, 0])  # Use zero angles for testing
     target_pose = fk_fun(q_init).full()  # 4x4 homogeneous matrix
     R_0T = target_pose[:3, :3]  # Desired end-effector orientation
     R_0_7_test = R_0T @ model_transforms['R'][-1]  # R_0_7 from end effector frame
     p_0_T_test = target_pose[:3, 3]  # Desired end-effector position
-    
+
+    # autoelbow IK:
+    # q_autoEB = IK_2R_2R_3R_auto_elbow(R_0_7_test, p_0_T_test, sew_stereo, model_transforms, None)
+
     psi_init = get_elbow_angle_kinova(q_init, model, sew_stereo)
-    psi_test = psi_init  # Stereo angle
+    # psi_test = psi_init  # Stereo angle
+    psi_test = 0
+    print(f"Elbow angle (psi) for initial configuration: {psi_test:.3f} rad ({np.degrees(psi_test):.1f}°)")
 
     
     # Test numerical version with timing

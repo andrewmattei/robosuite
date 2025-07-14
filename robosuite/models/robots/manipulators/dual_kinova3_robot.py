@@ -20,6 +20,7 @@ class DualKinova3(ManipulatorModel):
     @property
     def default_base(self):
         return "OmronMobileBaseSRL"
+        # return "OmronMobileBase"
 
     @property
     def default_gripper(self):

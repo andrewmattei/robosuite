@@ -2,6 +2,7 @@ from .device import Device
 from .keyboard import Keyboard
 from .quest import Quest
 from .quest_dualkinova3_teleop import QuestDualKinova3Teleop
+from .human_pose_dualkinova3_teleop_device import HumanPoseDualKinova3Teleop
 
 try:
     from .spacemouse import SpaceMouse

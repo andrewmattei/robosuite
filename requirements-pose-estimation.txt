@@ -1,0 +1,15 @@
+# Requirements for MediaPipe pose estimation script
+# Install with: pip install -r requirements-pose-estimation.txt
+
+# Core dependencies with version constraints to avoid compatibility issues
+mediapipe>=0.10.0,<0.11.0
+opencv-python>=4.5.0,<5.0.0
+numpy>=1.21.0,<2.0.0
+protobuf>=3.20.0,<4.0.0
+
+# Optional: For better performance on GPU
+# tensorflow-gpu>=2.8.0  # Uncomment if you have GPU support
+
+# Development/testing dependencies (optional)
+# pytest>=6.0.0
+# matplotlib>=3.3.0  # For pose visualization plots

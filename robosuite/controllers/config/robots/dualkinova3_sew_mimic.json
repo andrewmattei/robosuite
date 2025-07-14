@@ -1,0 +1,74 @@
+{
+    "type": "HYBRID_MOBILE_BASE",
+    "composite_controller_specific_configs": {
+        "ref_name": ["gripper0_right_grip_site", "gripper0_left_grip_site"],
+        "interpolation": null,
+        "actuation_part_names": ["torso","right", "left", "base"],
+        "max_dq": 4,
+        "nullspace_joint_weights": {
+            "robot0_torso_waist_yaw": 100.0,
+            "robot0_torso_waist_pitch": 100.0,
+            "robot0_torso_waist_roll": 500.0,
+            "robot0_l_shoulder_pitch": 4.0,
+            "robot0_r_shoulder_pitch": 4.0,
+            "robot0_l_shoulder_roll": 3.0,
+            "robot0_r_shoulder_roll": 3.0,
+            "robot0_l_shoulder_yaw": 2.0,
+            "robot0_r_shoulder_yaw": 2.0
+        },
+        "ik_pseudo_inverse_damping": 5e-2,
+        "ik_integration_dt": 1e-1,
+        "ik_max_dq": 4.0,
+        "ik_max_dq_torso": 0.2,
+        "ik_input_type": "absolute",
+        "ik_input_rotation_repr": "axis_angle",
+        "verbose": false
+    },
+    "body_parts": {
+        "arms": {
+            "right": {
+                "type": "SEW_MIMIC",
+                "input_max": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+                "input_min": [-2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0],
+                "output_max": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+                "output_min": [-2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0],
+                "kp": 150,
+                "kd": null,
+                "policy_freq": 20,
+                "interpolation": null,
+                "ramp_ratio": 0.2,
+                "gripper": {
+                    "type": "GRIP",
+                    "use_action_scaling": false,
+                    "interpolation": null
+                }
+            },
+            "left": {
+                "type": "SEW_MIMIC",
+                "input_max": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+                "input_min": [-2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0],
+                "output_max": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+                "output_min": [-2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0],
+                "kp": 150,
+                "kd": null,
+                "policy_freq": 20,
+                "interpolation": null,
+                "ramp_ratio": 0.2,
+                "gripper": {
+                    "type": "GRIP",
+                    "use_action_scaling": false,
+                    "interpolation": null
+                }
+            }
+        },
+        "torso": {
+            "type": "JOINT_POSITION",
+            "interpolation": "null",
+            "kp": 5000
+        },
+        "base": {
+            "type" : "JOINT_VELOCITY",
+            "interpolation": null
+        }
+    }
+}

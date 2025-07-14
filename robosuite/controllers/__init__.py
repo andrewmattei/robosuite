@@ -12,6 +12,7 @@ PART_CONTROLLER_INFO = {
     "OSC_GEO_POSITION": "Geometric Operational Space Control (Position Only)",
     "OSC_GEO_POSE": "Geometric Operational Space Control (Position + Orientation)",
     "IK_POSE": "Inverse Kinematics Control (Position + Orientation) (Note: must have PyBullet installed)",
+    "SEW_MIMIC": "SEW Mimic Control (Human Pose Imitation)",
 }
 
 ALL_PART_CONTROLLERS = PART_CONTROLLER_INFO.keys()

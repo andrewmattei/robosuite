@@ -1,0 +1,5 @@
+# Additional requirements for neural network training
+torch>=1.12.0
+scikit-learn>=1.1.0
+seaborn>=0.11.0
+matplotlib>=3.5.0

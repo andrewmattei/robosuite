@@ -160,7 +160,7 @@ def get_frame_transforms_from_pinocchio(model):
     p_transforms = []
     joint_names = []
     
-    print(f"Model has {model.njoints} joints and {model.nv} DOF")
+    # print(f"Model has {model.njoints} joints and {model.nv} DOF")
     
     # Loop through all joints (skip universe joint at index 0)
     for joint_id in range(1, model.njoints):

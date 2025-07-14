@@ -27,7 +27,7 @@ def load_part_controller_config(custom_fpath=None, default_controller=None):
         custom_fpath (str): Absolute filepath to the custom controller configuration .json file to be loaded
         default_controller (str): If specified, overrides @custom_fpath and loads a default configuration file for the
             specified controller.
-            Choices are: {"JOINT_POSITION", "JOINT_TORQUE", "JOINT_VELOCITY", "OSC_POSITION", "OSC_POSE", "OSC_GEO_POSITION", "OSC_GEO_POSE", "IK_POSE"}
+            Choices are: {"JOINT_POSITION", "JOINT_TORQUE", "JOINT_VELOCITY", "OSC_POSITION", "OSC_POSE", "OSC_GEO_POSITION", "OSC_GEO_POSE", "IK_POSE", "SEW_MIMIC"}
 
     Returns:
         dict: Controller configuration
@@ -78,7 +78,7 @@ def arm_controller_factory(name, params):
 
     Args:
         name (str): the name of the controller. Must be one of: {JOINT_POSITION, JOINT_TORQUE, JOINT_VELOCITY,
-            OSC_POSITION, OSC_POSE, OSC_GEO_POSITION, OSC_GEO_POSE, IK_POSE}
+            OSC_POSITION, OSC_POSE, OSC_GEO_POSITION, OSC_GEO_POSE, IK_POSE, SEW_MIMIC}
         params (dict): dict containing the relevant params to pass to the controller
         sim (MjSim): Mujoco sim reference to pass to the controller
 
@@ -146,6 +146,12 @@ def arm_controller_factory(name, params):
             interpolator_ori=ori_interpolator,
             **params,
         )
+
+    if name == "SEW_MIMIC":
+        # SEW Mimic controller takes 9D input (3D for each of S, E, W positions)
+        if interpolator is not None:
+            interpolator.set_states(dim=9)  # SEW control uses 9 dimensions (3 for each of S, E, W)
+        return arm_controllers.SEWMimicController(interpolator=interpolator, **params)
 
     if name == "JOINT_VELOCITY":
         return generic.JointVelocityController(interpolator=interpolator, **params)

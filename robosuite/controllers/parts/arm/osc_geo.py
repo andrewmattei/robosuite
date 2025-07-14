@@ -7,7 +7,8 @@ import robosuite.utils.transform_utils as T
 from robosuite.controllers.parts.controller import Controller
 from robosuite.utils.control_utils import *
 
-from robosuite.demos.subproblems_casadi import IK_2R_2R_3R_numerical, kinova_path, get_elbow_angle_kinova, filter_and_select_closest_solution
+from robosuite.demos.geometric_kinematics_gen3_7dof import IK_2R_2R_3R_numerical, kinova_path, get_elbow_angle_kinova, filter_and_select_closest_solution
+from robosuite.demos.geometric_kinematics_gen3_7dof import IK_2R_2R_3R_auto_elbow
 from robosuite.demos.sew_stereo import SEWStereo
 import robosuite.demos.optimizing_gen3_arm as opt
 
@@ -236,12 +237,12 @@ class OperationalSpaceControllerGeo(Controller):
         self.p_ref_ee = R_wd_ref.T @ (p_wd_ee - p_wd_ref)  # Position from reference to end effector
 
         pin_model, _ = opt.load_kinova_model(kinova_path)
-        r, v = np.array([1, 0, 0]), np.array([0, 1, 0])
+        r, v = np.array([-1, 0, 0]), np.array([0, 1, 0]) # r is e_t, v is e_r
         self.sew_stereo = SEWStereo(r, v)
         self.model_transforms = opt.get_frame_transforms_from_pinocchio(pin_model)
         self.elbow_angle = get_elbow_angle_kinova(self.initial_joint, pin_model, self.sew_stereo)
         self.fk_fun, _,_,_,_,_ = opt.build_casadi_kinematics_dynamics(pin_model, 'tool_frame')
-        # print(f"Elbow angle: {self.elbow_angle}")
+        print(f"Elbow angle: {self.elbow_angle}")
 
 
     def set_goal(self, action):
@@ -472,16 +473,28 @@ class OperationalSpaceControllerGeo(Controller):
 
         # Call IK solver to get desired joint angles
         try:
+            angle = np.pi/4
+            # if left robot, use minus sign
+            if self.part_name == "left":
+                test_elbow_angle = self.elbow_angle + angle
+            else:
+                test_elbow_angle = self.elbow_angle - angle
             Q_solutions, is_LS_vec = IK_2R_2R_3R_numerical(
-                R_0_7_desired, p_0_T_desired, self.sew_stereo, self.elbow_angle, self.model_transforms
+                R_0_7_desired, p_0_T_desired, self.sew_stereo, test_elbow_angle, self.model_transforms
             )
+
+            # Q_solutions, is_LS_vec = IK_2R_2R_3R_auto_elbow(
+            #     R_0_7_desired, p_0_T_desired, self.sew_stereo, self.model_transforms
+            # )
             
             # Select the closest solution to current joint configuration
             if len(Q_solutions) > 0:
-                q_desired = filter_and_select_closest_solution(Q_solutions, is_LS_vec, self.joint_pos)
-                q_desired = q_desired[0]
+                q_desired, is_least_square, joint_limit_violated = filter_and_select_closest_solution(Q_solutions, is_LS_vec, self.joint_pos)
             else:
                 # If no solution found, use current joint positions as fallback
+                q_desired = self.joint_pos.copy()
+            if joint_limit_violated:
+                print("Joint limit violated in IK solution, using current joint positions as fallback.")
                 q_desired = self.joint_pos.copy()
                 
         except Exception as e:
