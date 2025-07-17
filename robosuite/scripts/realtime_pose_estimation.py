@@ -1,9 +1,9 @@
 """
-Real-time pose estimation using MediaPipe.
+Real-time pose and hand estimation using MediaPipe.
 
 This script captures video from a webcam and performs real-time human pose estimation
-using Google's MediaPipe library. It displays the pose landmarks and connections
-on the video feed.
+and optional hand detection using Google's MediaPipe library. It displays the pose 
+landmarks and connections on the video feed, with optional hand landmark detection.
 
 Usage:
     python realtime_pose_estimation.py [--camera_id CAMERA_ID] [--confidence CONFIDENCE]
@@ -13,6 +13,7 @@ Args:
     --confidence: Minimum detection confidence (default: 0.5)
     --complexity: Model complexity (0, 1, or 2) (default: 1)
     --smooth: Enable landmark smoothing (default: True)
+    --enable_hands: Enable hand detection (default: False)
     --save_output: Save the output video to file (default: False)
     --output_path: Path to save output video (default: pose_estimation_output.mp4)
 
@@ -20,6 +21,7 @@ Controls:
     - Press 'q' to quit
     - Press 's' to save a screenshot
     - Press 'r' to reset pose tracking
+    - Press 'w' to toggle world coordinates display
 """
 
 import cv2
@@ -31,25 +33,28 @@ import os
 from typing import Optional, Tuple, List
 
 
-class PoseEstimator:
-    """Real-time pose estimation using MediaPipe."""
+class PoseAndHandEstimator:
+    """Real-time pose and hand estimation using MediaPipe."""
     
     def __init__(self, 
                  min_detection_confidence: float = 0.5,
                  min_tracking_confidence: float = 0.5,
                  model_complexity: int = 1,
-                 smooth_landmarks: bool = True):
+                 smooth_landmarks: bool = True,
+                 enable_hand_detection: bool = True):
         """
-        Initialize the pose estimator.
+        Initialize the pose and hand estimator.
         
         Args:
             min_detection_confidence: Minimum confidence for pose detection
             min_tracking_confidence: Minimum confidence for pose tracking
             model_complexity: Model complexity (0, 1, or 2)
             smooth_landmarks: Whether to smooth landmarks
+            enable_hand_detection: Whether to enable hand detection
         """
         try:
             self.mp_pose = mp.solutions.pose
+            self.mp_hands = mp.solutions.hands
             self.mp_drawing = mp.solutions.drawing_utils
             self.mp_drawing_styles = mp.solutions.drawing_styles
             
@@ -60,12 +65,25 @@ class PoseEstimator:
                 smooth_landmarks=smooth_landmarks
             )
             
+            # Initialize hand detection if enabled
+            self.enable_hand_detection = enable_hand_detection
+            if enable_hand_detection:
+                self.hands = self.mp_hands.Hands(
+                    static_image_mode=False,
+                    max_num_hands=2,
+                    min_detection_confidence=min_detection_confidence,
+                    min_tracking_confidence=min_tracking_confidence
+                )
+            else:
+                self.hands = None
+            
             # Performance tracking
             self.fps_counter = 0
             self.start_time = time.time()
             self.frame_times = []
             
-            print("MediaPipe Pose initialized successfully")
+            hand_status = "with hand detection" if enable_hand_detection else "without hand detection"
+            print(f"MediaPipe Pose initialized successfully {hand_status}")
             
         except Exception as e:
             print(f"Error initializing MediaPipe: {e}")
@@ -73,15 +91,16 @@ class PoseEstimator:
             print("Try running: pip install protobuf==3.20.3")
             raise
         
-    def process_frame(self, frame: np.ndarray, show_world_coords: bool = True) -> Tuple[np.ndarray, Optional[object], Optional[object]]:
+    def process_frame(self, frame: np.ndarray, show_world_coords: bool = True) -> Tuple[np.ndarray, Optional[object], Optional[object], Optional[object]]:
         """
-        Process a single frame and detect poses.
+        Process a single frame and detect poses and hands.
         
         Args:
             frame: Input BGR frame
+            show_world_coords: Whether to display world coordinates
             
         Returns:
-            Tuple of (annotated_frame, pose_landmarks, pose_results)
+            Tuple of (annotated_frame, pose_landmarks, pose_results, hand_results)
         """
         try:
             # Convert BGR to RGB
@@ -89,118 +108,57 @@ class PoseEstimator:
             rgb_frame.flags.writeable = False
             
             # Perform pose detection
-            results = self.pose.process(rgb_frame)
+            pose_results = self.pose.process(rgb_frame)
+            
+            # Perform hand detection if enabled
+            hand_results = None
+            if self.enable_hand_detection and self.hands:
+                hand_results = self.hands.process(rgb_frame)
             
             # Convert back to BGR for OpenCV
             rgb_frame.flags.writeable = True
             annotated_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
             
             # Draw pose landmarks
-            if results.pose_landmarks:
+            if pose_results.pose_landmarks:
                 self.mp_drawing.draw_landmarks(
                     annotated_frame,
-                    results.pose_landmarks,
+                    pose_results.pose_landmarks,
                     self.mp_pose.POSE_CONNECTIONS,
                     landmark_drawing_spec=self.mp_drawing_styles.get_default_pose_landmarks_style()
                 )
                 
-                # Add landmark coordinates as text
-                self._add_landmark_info(annotated_frame, results.pose_landmarks)
-                
                 # Get body-centric coordinates and display them if enabled
                 if show_world_coords:
-                    body_centric_coords = self.get_body_centric_coordinates(results)
+                    body_centric_coords = self.get_body_centric_coordinates(pose_results)
                     if body_centric_coords:
                         self.display_body_centric_info(annotated_frame, body_centric_coords)
             
-            return annotated_frame, results.pose_landmarks, results
+            # Draw hand landmarks if enabled and detected
+            if self.enable_hand_detection and hand_results and hand_results.multi_hand_landmarks:
+                for hand_landmarks in hand_results.multi_hand_landmarks:
+                    self.mp_drawing.draw_landmarks(
+                        annotated_frame,
+                        hand_landmarks,
+                        self.mp_hands.HAND_CONNECTIONS,
+                        self.mp_drawing_styles.get_default_hand_landmarks_style(),
+                        self.mp_drawing_styles.get_default_hand_connections_style()
+                    )
+                
+                # Get hand-centric coordinates and display them if world coords are enabled
+                if show_world_coords and pose_results.pose_world_landmarks:
+                    body_centric_coords = self.get_body_centric_coordinates(pose_results)
+                    if body_centric_coords:
+                        hand_centric_coords = self.get_hand_centric_coordinates(hand_results, body_centric_coords)
+                        if hand_centric_coords:
+                            self.display_hand_centric_info(annotated_frame, hand_centric_coords)
+            
+            return annotated_frame, pose_results.pose_landmarks, pose_results, hand_results
             
         except Exception as e:
             print(f"Error processing frame: {e}")
             # Return the original frame if processing fails
-            return frame, None, None
-    
-    def _add_landmark_info(self, frame: np.ndarray, landmarks) -> None:
-        """Add landmark information to the frame."""
-        # Display key landmarks with 3D coordinates
-        key_landmarks = {
-            'L_Shoulder (S)': self.mp_pose.PoseLandmark.LEFT_SHOULDER,
-            'L_Elbow (E)': self.mp_pose.PoseLandmark.LEFT_ELBOW,
-            'L_Wrist (W)': self.mp_pose.PoseLandmark.LEFT_WRIST,
-            'R_Shoulder (S)': self.mp_pose.PoseLandmark.RIGHT_SHOULDER,
-            'R_Elbow (E)': self.mp_pose.PoseLandmark.RIGHT_ELBOW,
-            'R_Wrist (W)': self.mp_pose.PoseLandmark.RIGHT_WRIST,
-        }
-        
-        y_offset = 30
-        for name, landmark_id in key_landmarks.items():
-            landmark = landmarks.landmark[landmark_id]
-            if landmark.visibility > 0.5:  # Only show visible landmarks
-                # Display 3D coordinates (normalized)
-                x, y, z = landmark.x, landmark.y, landmark.z
-                text = f"{name}: ({x:.3f}, {y:.3f}, {z:.3f})"
-                cv2.putText(frame, text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 
-                           0.45, (0, 255, 0), 1, cv2.LINE_AA)
-                y_offset += 20
-    
-    def calculate_pose_angles(self, landmarks) -> dict:
-        """
-        Calculate key pose angles.
-        
-        Args:
-            landmarks: MediaPipe pose landmarks
-            
-        Returns:
-            Dictionary of calculated angles
-        """
-        if not landmarks:
-            return {}
-        
-        def calculate_angle(a, b, c):
-            """Calculate angle between three points."""
-            a = np.array([a.x, a.y])
-            b = np.array([b.x, b.y])
-            c = np.array([c.x, c.y])
-            
-            radians = np.arctan2(c[1] - b[1], c[0] - b[0]) - np.arctan2(a[1] - b[1], a[0] - b[0])
-            angle = np.abs(radians * 180.0 / np.pi)
-            
-            if angle > 180.0:
-                angle = 360 - angle
-                
-            return angle
-        
-        angles = {}
-        
-        try:
-            # Left arm angle (shoulder-elbow-wrist)
-            left_shoulder = landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
-            left_elbow = landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_ELBOW]
-            left_wrist = landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_WRIST]
-            angles['left_arm'] = calculate_angle(left_shoulder, left_elbow, left_wrist)
-            
-            # Right arm angle
-            right_shoulder = landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
-            right_elbow = landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_ELBOW]
-            right_wrist = landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-            angles['right_arm'] = calculate_angle(right_shoulder, right_elbow, right_wrist)
-            
-            # Left leg angle (hip-knee-ankle)
-            left_hip = landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_HIP]
-            left_knee = landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_KNEE]
-            left_ankle = landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_ANKLE]
-            angles['left_leg'] = calculate_angle(left_hip, left_knee, left_ankle)
-            
-            # Right leg angle
-            right_hip = landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_HIP]
-            right_knee = landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_KNEE]
-            right_ankle = landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_ANKLE]
-            angles['right_leg'] = calculate_angle(right_hip, right_knee, right_ankle)
-            
-        except Exception as e:
-            print(f"Error calculating angles: {e}")
-            
-        return angles
+            return frame, None, None, None
     
     def update_fps(self) -> float:
         """Update and return current FPS."""
@@ -221,11 +179,13 @@ class PoseEstimator:
     def cleanup(self):
         """Cleanup resources."""
         self.pose.close()
+        if self.enable_hand_detection and self.hands:
+            self.hands.close()
     
     def get_body_centric_coordinates(self, pose_results):
         """
         Convert MediaPipe world landmarks to a body-centric coordinate system.
-        
+        MediaPipe world has origin at the center of hip, x-axis pointing left, y-axis pointing down, z-axis pointing backward, in facing camera perspective.
         Args:
             pose_results: MediaPipe pose detection results
             
@@ -320,6 +280,133 @@ class PoseEstimator:
         
         return sew_coordinates
 
+    def get_hand_centric_coordinates(self, hand_results, body_centric_coords):
+        """
+        Convert MediaPipe hand landmarks to hand-centric coordinate systems.
+        Note that hand has the same world coordinate system as body pose.
+        Except origin is at wrist, axes are the same as pose world landmarks.
+        Args:
+            hand_results: MediaPipe hand detection results
+            body_centric_coords: Body-centric coordinate system from get_body_centric_coordinates()
+            
+        Returns:
+            Dictionary containing hand-centric coordinate frames and landmark positions
+        """
+        if not hand_results or not hand_results.multi_hand_world_landmarks or not body_centric_coords:
+            return None
+            
+        hand_frames = {}
+        
+        # Get body frame transformation matrix for converting to body-centric coordinates
+        body_frame = body_centric_coords['body_frame']
+        body_origin = body_frame['origin']
+        body_rotation_matrix = np.column_stack([
+            body_frame['x_axis'], 
+            body_frame['y_axis'], 
+            body_frame['z_axis']
+        ])
+        
+        def wrist_world_to_body_frame(landmark, hand_wrist, pose_wrist_body):
+            """Convert world landmark to body-centric coordinates."""
+            wrist_world_pos = np.array([landmark.x, landmark.y, landmark.z])
+            translated = wrist_world_pos - hand_wrist
+            body_pos = body_rotation_matrix.T @ translated + pose_wrist_body
+            return body_pos
+        
+        for hand_idx, (hand_landmarks, hand_world_landmarks, handedness) in enumerate(
+            zip(hand_results.multi_hand_landmarks, hand_results.multi_hand_world_landmarks, hand_results.multi_handedness)):
+            
+            # Flip MediaPipe hand labels to match body pose perspective
+            mediapipe_label = handedness.classification[0].label.lower()
+            actual_hand_label = 'right' if mediapipe_label == 'left' else 'left'
+            
+            # Get key landmarks in world coordinates (use world landmarks for 3D coordinates)
+            wrist = hand_world_landmarks.landmark[self.mp_hands.HandLandmark.WRIST]
+            index_mcp = hand_world_landmarks.landmark[self.mp_hands.HandLandmark.INDEX_FINGER_MCP]
+            pinky_mcp = hand_world_landmarks.landmark[self.mp_hands.HandLandmark.PINKY_MCP]
+            
+            # Convert to body-centric coordinates
+            hand_wrist = np.array([wrist.x, wrist.y, wrist.z])
+            pose_wrist_body = body_centric_coords[actual_hand_label]['W']
+            wrist_body = wrist_world_to_body_frame(wrist, hand_wrist, pose_wrist_body)
+            index_mcp_body = wrist_world_to_body_frame(index_mcp, hand_wrist, pose_wrist_body)
+            pinky_mcp_body = wrist_world_to_body_frame(pinky_mcp, hand_wrist, pose_wrist_body)
+
+            # Define hand frame origin at wrist
+            hand_origin = wrist_body
+            
+            # Z-axis points toward midpoint between INDEX_FINGER_MCP and PINKY_MCP
+            mcp_midpoint = (index_mcp_body + pinky_mcp_body) / 2
+            z_axis = mcp_midpoint - hand_origin
+            z_axis = z_axis / (np.linalg.norm(z_axis) + 1e-8)  # normalize
+            
+            # Define Y-axis based on hand laterality
+            wrist_to_index = index_mcp_body - hand_origin
+            wrist_to_pinky = pinky_mcp_body - hand_origin
+            
+            if actual_hand_label == 'left':
+                # Left hand: y = (WRIST->PINKY) × (WRIST->INDEX)
+                y_axis = np.cross(wrist_to_pinky, wrist_to_index)
+            else:  # right hand
+                # Right hand: y = (WRIST->INDEX) × (WRIST->PINKY)
+                y_axis = np.cross(wrist_to_index, wrist_to_pinky)
+            
+            y_axis = y_axis / (np.linalg.norm(y_axis) + 1e-8)  # normalize
+            
+            # X-axis: x = y × z
+            x_axis = np.cross(y_axis, z_axis)
+            x_axis = x_axis / (np.linalg.norm(x_axis) + 1e-8)  # normalize
+            
+            # Create homogeneous transformation matrix (4x4)
+            # This represents the hand frame in body-centric coordinates
+            hand_transform = np.eye(4)
+            hand_transform[:3, 0] = x_axis  # X column
+            hand_transform[:3, 1] = y_axis  # Y column
+            hand_transform[:3, 2] = z_axis  # Z column
+            hand_transform[:3, 3] = hand_origin  # Translation
+
+            if actual_hand_label == 'left':
+                print(hand_transform)
+            
+            # Create rotation matrix for transforming points to hand frame
+            hand_rotation_matrix = np.column_stack([x_axis, y_axis, z_axis])
+            
+            def body_to_hand_frame(body_pos):
+                """Transform a body-centric position to hand-centric coordinates."""
+                translated = body_pos - hand_origin
+                hand_pos = hand_rotation_matrix.T @ translated
+                return hand_pos
+            
+            # Transform all hand landmarks to hand-centric coordinates
+            hand_landmarks_in_hand_frame = {}
+            landmark_names = [
+                'WRIST', 'THUMB_CMC', 'THUMB_MCP', 'THUMB_IP', 'THUMB_TIP',
+                'INDEX_FINGER_MCP', 'INDEX_FINGER_PIP', 'INDEX_FINGER_DIP', 'INDEX_FINGER_TIP',
+                'MIDDLE_FINGER_MCP', 'MIDDLE_FINGER_PIP', 'MIDDLE_FINGER_DIP', 'MIDDLE_FINGER_TIP',
+                'RING_FINGER_MCP', 'RING_FINGER_PIP', 'RING_FINGER_DIP', 'RING_FINGER_TIP',
+                'PINKY_MCP', 'PINKY_PIP', 'PINKY_DIP', 'PINKY_TIP'
+            ]
+            
+            for landmark_name in landmark_names:
+                landmark_id = getattr(self.mp_hands.HandLandmark, landmark_name)
+                landmark = hand_world_landmarks.landmark[landmark_id]  # Use world landmarks
+                landmark_body = wrist_world_to_body_frame(landmark, hand_wrist, pose_wrist_body)
+                landmark_hand = body_to_hand_frame(landmark_body)
+                hand_landmarks_in_hand_frame[landmark_name.lower()] = landmark_hand
+            
+            # Store hand frame information
+            hand_frames[actual_hand_label] = {
+                'transform_matrix': hand_transform,  # 4x4 homogeneous matrix in body frame
+                'origin': hand_origin,  # hand origin in body-centric coordinates
+                'x_axis': x_axis,  # hand frame axes in body-centric coordinates
+                'y_axis': y_axis,
+                'z_axis': z_axis,
+                'landmarks': hand_landmarks_in_hand_frame,  # all landmarks in hand-centric coordinates
+                'confidence': handedness.classification[0].score
+            }
+        
+        return hand_frames
+
     def display_body_centric_info(self, frame: np.ndarray, sew_coords: dict) -> None:
         """Display body-centric SEW coordinates on frame."""
         if not sew_coords:
@@ -344,13 +431,59 @@ class PoseEstimator:
                     y_offset += 15
                 y_offset += 5
     
+    def display_hand_centric_info(self, frame: np.ndarray, hand_coords: dict) -> None:
+        """Display hand-centric coordinate information on frame."""
+        if not hand_coords:
+            return
+            
+        # Position hand info to the right side of the frame to avoid overlap
+        x_offset = frame.shape[1] - 300  # Right side of frame
+        y_offset = 30
+        
+        cv2.putText(frame, "Hand-Centric Coordinates:", (x_offset, y_offset),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2, cv2.LINE_AA)
+        y_offset += 25
+        
+        for hand_label in ['left', 'right']:
+            if hand_label in hand_coords:
+                hand_info = hand_coords[hand_label]
+                
+                cv2.putText(frame, f"{hand_label.upper()} HAND (conf: {hand_info['confidence']:.2f}):", 
+                           (x_offset, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
+                y_offset += 20
+                
+                # Show hand frame origin in body coordinates
+                origin = hand_info['origin']
+                cv2.putText(frame, f"  Origin: ({origin[0]:+.3f}, {origin[1]:+.3f}, {origin[2]:+.3f})", 
+                           (x_offset, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1, cv2.LINE_AA)
+                y_offset += 15
+                
+                # Show key landmarks in hand-centric coordinates
+                key_landmarks = ['wrist', 'thumb_tip', 'index_finger_tip', 'middle_finger_tip', 
+                               'ring_finger_tip', 'pinky_tip']
+                
+                cv2.putText(frame, "  Hand-frame landmarks:", (x_offset, y_offset),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 255), 1, cv2.LINE_AA)
+                y_offset += 15
+                
+                for landmark_name in key_landmarks:
+                    if landmark_name in hand_info['landmarks']:
+                        pos = hand_info['landmarks'][landmark_name]
+                        display_name = landmark_name.replace('_', ' ').title()
+                        cv2.putText(frame, f"    {display_name}: ({pos[0]:+.3f}, {pos[1]:+.3f}, {pos[2]:+.3f})", 
+                                   (x_offset, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 0, 255), 1, cv2.LINE_AA)
+                        y_offset += 12
+                
+                y_offset += 10  # Space between hands
+    
 def main():
-    """Main function to run the pose estimation."""
-    parser = argparse.ArgumentParser(description='Real-time pose estimation using MediaPipe')
+    """Main function to run the pose and hand estimation."""
+    parser = argparse.ArgumentParser(description='Real-time pose and hand estimation using MediaPipe')
     parser.add_argument('--camera_id', type=int, default=0, help='Camera device ID')
     parser.add_argument('--confidence', type=float, default=0.5, help='Minimum detection confidence')
     parser.add_argument('--complexity', type=int, default=1, choices=[0, 1, 2], help='Model complexity')
     parser.add_argument('--smooth', type=bool, default=True, help='Enable landmark smoothing')
+    parser.add_argument('--enable_hands', action='store_true', help='Enable hand detection')
     parser.add_argument('--save_output', action='store_true', help='Save output video')
     parser.add_argument('--output_path', type=str, default='pose_estimation_output.mp4', help='Output video path')
     parser.add_argument('--width', type=int, default=640, help='Video width')
@@ -358,12 +491,13 @@ def main():
     
     args = parser.parse_args()
     
-    # Initialize pose estimator
-    pose_estimator = PoseEstimator(
+    # Initialize pose and hand estimator
+    pose_estimator = PoseAndHandEstimator(
         min_detection_confidence=args.confidence,
         min_tracking_confidence=args.confidence,
         model_complexity=args.complexity,
-        smooth_landmarks=args.smooth
+        smooth_landmarks=args.smooth,
+        enable_hand_detection=True
     )
     
     # Initialize camera
@@ -383,16 +517,17 @@ def main():
         fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
         video_writer = cv2.VideoWriter(args.output_path, fourcc, fps, (args.width, args.height))
     
-    print("Starting pose estimation...")
+    hand_status = "enabled" if args.enable_hands else "disabled"
+    print(f"Starting pose estimation with hand detection {hand_status}...")
     print("Controls:")
     print("  'q' - Quit")
     print("  's' - Save screenshot")
     print("  'r' - Reset tracking")
-    print("  'a' - Toggle angle display")
     print("  'w' - Toggle world coordinates display")
+    if args.enable_hands:
+        print("  Hand detection is enabled - fingertip positions will be shown")
     
     screenshot_counter = 0
-    show_angles = False
     show_world_coords = True
     
     try:
@@ -403,22 +538,12 @@ def main():
                 break
             
             # Process frame
-            annotated_frame, landmarks, pose_results = pose_estimator.process_frame(frame, show_world_coords)
+            annotated_frame, landmarks, pose_results, hand_results = pose_estimator.process_frame(frame, show_world_coords)
             
             # Calculate and display FPS
             fps = pose_estimator.update_fps()
             cv2.putText(annotated_frame, f"FPS: {fps:.1f}", (10, annotated_frame.shape[0] - 10),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
-            
-            # Calculate and display angles if enabled
-            if show_angles and landmarks:
-                angles = pose_estimator.calculate_pose_angles(landmarks)
-                y_offset = annotated_frame.shape[0] - 100
-                for name, angle in angles.items():
-                    text = f"{name}: {angle:.1f}°"
-                    cv2.putText(annotated_frame, text, (10, y_offset),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1, cv2.LINE_AA)
-                    y_offset += 20
             
             # Save frame if recording
             if video_writer:
@@ -439,15 +564,13 @@ def main():
             elif key == ord('r'):
                 print("Resetting pose tracking...")
                 pose_estimator.cleanup()
-                pose_estimator = PoseEstimator(
+                pose_estimator = PoseAndHandEstimator(
                     min_detection_confidence=args.confidence,
                     min_tracking_confidence=args.confidence,
                     model_complexity=args.complexity,
-                    smooth_landmarks=args.smooth
+                    smooth_landmarks=args.smooth,
+                    enable_hand_detection=args.enable_hands
                 )
-            elif key == ord('a'):
-                show_angles = not show_angles
-                print(f"Angle display: {'ON' if show_angles else 'OFF'}")
             elif key == ord('w'):
                 show_world_coords = not show_world_coords
                 print(f"World coordinates display: {'ON' if show_world_coords else 'OFF'}")

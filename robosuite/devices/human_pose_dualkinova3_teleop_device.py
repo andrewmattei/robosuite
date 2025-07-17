@@ -3,7 +3,14 @@ import time
 import numpy as np
 import cv2
 import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+from mediapipe.framework.formats import landmark_pb2
+import os
 from typing import Optional, Dict, Tuple
+
+# Stronger Pose Estimation Model
+# wget -O pose_landmarker.task -q https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task
 
 import robosuite.utils.transform_utils as T
 from robosuite.devices import Device
@@ -166,8 +173,9 @@ class HumanPoseDualKinova3Teleop(Device):
                 
                 # Resize the display frame to 200% (2x) its original size
                 height, width = display_frame.shape[:2]
-                new_width = int(width * 2.0)
-                new_height = int(height * 2.0)
+                magnify = 2.0
+                new_width = int(width * magnify)
+                new_height = int(height * magnify)
                 display_frame = cv2.resize(display_frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
 
                 # Display frame
