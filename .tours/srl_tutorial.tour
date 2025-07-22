@@ -1,0 +1,21 @@
+{
+  "$schema": "https://aka.ms/codetour-schema",
+  "title": "SRL_Tutorial",
+  "steps": [
+    {
+      "file": "robosuite/demos/demo_dual_kinova3_software_human_pose_teleop.py",
+      "description": "Top-level script (entrypoint) for human-pose based control demo",
+      "line": 4
+    },
+    {
+      "file": "robosuite/devices/human_pose_dualkinova3_teleop_device.py",
+      "description": "Device definition for dual Kinova + mediapipe-based human pose estimation",
+      "line": 19
+    },
+    {
+      "file": "robosuite/devices/human_pose_dualkinova3_teleop_device.py",
+      "description": "Worker thread that fetches and provides human pose data",
+      "line": 134
+    }
+  ]
+}
