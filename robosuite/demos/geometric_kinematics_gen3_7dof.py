@@ -665,7 +665,7 @@ def IK_2R_2R_3R_auto_elbow(R_0_7, p_0_T, sew_stereo, model_transforms, q_prev=No
     return np.column_stack(Q) if Q else np.array([]).reshape(7, 0), is_LS_vec
 
 
-def IK_2R_2R_3R_SEW(S_human, E_human, W_human, model_transforms, sol_ids=None):
+def IK_2R_2R_3R_SEW(S_human, E_human, W_human, model_transforms, sol_ids=None, R_0_T_kinova=None):
     """
     Numerical inverse kinematics function that matches robot arm SEW (Shoulder-Elbow-Wrist) 
     angles with human poses in a forward fashion.
@@ -673,7 +673,8 @@ def IK_2R_2R_3R_SEW(S_human, E_human, W_human, model_transforms, sol_ids=None):
     The approach:
     1. Joints 1,2: Use subproblem 2 to orient shoulder segment toward human shoulder-elbow direction
     2. Joints 3,4: Use subproblem 2 to orient elbow segment toward human elbow-wrist direction  
-    3. Joints 5,6,7: Set to zeros for now (can be extended for wrist orientation matching)
+    3. Joints 5,6,7: Set to zeros by default, or if R_0_T_kinova is provided, use subproblem 2 for q5,q6 
+       and subproblem 1 for q7 to match end-effector orientation
     
     Args:
         S_human: 3x1 numpy array - human shoulder position in robot base frame
@@ -686,7 +687,10 @@ def IK_2R_2R_3R_SEW(S_human, E_human, W_human, model_transforms, sol_ids=None):
         sol_ids: dict with solution indices for consistent solution selection:
             - 'q12_idx': index for joints 1,2 solution (0 or 1)
             - 'q34_idx': index for joints 3,4 solution (0 or 1)
+            - 'q56_idx': index for joints 5,6 solution (when R_0_T_kinova is provided)
             If None, returns all solutions
+        R_0_T_kinova: 3x3 numpy array - desired end-effector orientation in robot base frame
+               If provided, will solve for wrist joints (q5,q6,q7) to match this orientation
     
     Returns:
         Q: numpy array of joint angle solutions (7 x num_solutions)
@@ -697,7 +701,7 @@ def IK_2R_2R_3R_SEW(S_human, E_human, W_human, model_transforms, sol_ids=None):
     
     Q = []
     is_LS_vec = []
-    sol_ids_used = {'q12_idx': [], 'q34_idx': []}
+    sol_ids_used = {'q12_idx': [], 'q34_idx': [], 'q56_idx': []}
     
     # Extract frame transformations
     R_local = model_transforms['R']
@@ -835,24 +839,93 @@ def IK_2R_2R_3R_SEW(S_human, E_human, W_human, model_transforms, sol_ids=None):
             q3 = theta1_34[j]
             q4 = theta2_34[j]
             
-            # === STAGE 3: Set joints 5,6,7 to zeros ===
-            # For now, we set the wrist joints to zero
-            # This can be extended later to match human wrist orientation
-            q5 = 0.0
-            q6 = 0.0
-            q7 = 0.0
+            # === STAGE 3: Set joints 5,6,7 ===
+            # Build rotation matrices up to joint 4
+            R_0_3 = R_0_2 @ R_23
+            R_2_3 = R_23 @ rot_numerical(ez, q3)
+            R_3_4 = R_34 @ rot_numerical(ez, q4)
+            R_0_4 = R_0_2 @ R_2_3 @ R_3_4
             
-            # Combine joint angles
-            q_solution = np.array([q1, q2, q3, q4, q5, q6, q7])
-            Q.append(q_solution)
-            
-            # Combine LS flags (OR operation)
-            overall_is_ls = is_LS_12 or is_LS_34
-            is_LS_vec.append(overall_is_ls)
-            
-            # Store solution indices used
-            sol_ids_used['q12_idx'].append(i)
-            sol_ids_used['q34_idx'].append(j)
+            if R_0_T_kinova is not None:
+                # Use the provided end-effector orientation to solve for wrist joints
+                # Following the same approach as IK_2R_2R_3R_numerical()
+                R_0_7 = R_0_T_kinova @ R_7T.T
+                
+                # Joint axes in their local frames
+                h_5 = ez  # Joint 5 axis in 5 frame
+                h_6 = R_56 @ ez  # Joint 6 axis in 5 frame
+                
+                # Desired joint 7 axis in frame 5 (based on desired end-effector orientation)
+                h_7_act_5 = (R_0_4 @ R_45).T @ R_0_7 @ ez
+                
+                # Joint 7 axis at zero configuration in frame 5
+                h_7_zero_5 = R_56 @ R_67 @ ez
+                
+                # Use subproblem 2 to find q5, q6
+                theta5_56, theta6_56, is_LS_56 = sp_2_numerical(h_7_act_5, h_7_zero_5, -h_5, h_6)
+                
+                # Ensure we have arrays
+                if np.isscalar(theta5_56):
+                    theta5_56 = np.array([theta5_56])
+                if np.isscalar(theta6_56):
+                    theta6_56 = np.array([theta6_56])
+                
+                # If sol_ids provided, use specific solution indices for q5, q6
+                if sol_ids is not None and 'q56_idx' in sol_ids:
+                    q56_indices = [sol_ids['q56_idx']]
+                else:
+                    q56_indices = range(len(theta5_56))
+                
+                # Iterate through q5, q6 solutions
+                for k in q56_indices:
+                    if k >= len(theta5_56):
+                        continue  # Skip if index out of range
+                        
+                    q5 = theta5_56[k]
+                    q6 = theta6_56[k]
+                    
+                    # Build rotation matrix up to joint 6
+                    R_4_5 = R_45 @ rot_numerical(ez, q5)
+                    R_5_6 = R_56 @ rot_numerical(ez, q6)
+                    R_0_6 = R_0_4 @ R_4_5 @ R_5_6
+                    
+                    # Use subproblem 1 to find q7
+                    h_7_final = ez  # Joint 7 axis in frame 7
+                    h_6_act_7 = R_0_7.T @ R_0_6 @ ez  # Actual orientation of joint 6 axis in frame 7
+                    h_6_zero_7 = R_67.T @ ez  # Joint 6 axis at zero config in frame 7
+                    
+                    q7, q7_is_ls = sp_1_numerical(h_6_zero_7, h_6_act_7, -h_7_final)
+                    
+                    # Combine joint angles
+                    q_solution = np.array([q1, q2, q3, q4, q5, q6, q7])
+                    Q.append(q_solution)
+                    
+                    # Combine LS flags (OR operation)
+                    overall_is_ls = is_LS_12 or is_LS_34 or is_LS_56 or q7_is_ls
+                    is_LS_vec.append(overall_is_ls)
+                    
+                    # Store solution indices used
+                    sol_ids_used['q12_idx'].append(i)
+                    sol_ids_used['q34_idx'].append(j)
+                    sol_ids_used['q56_idx'].append(k)
+            else:
+                # Default behavior: set wrist joints to zero
+                q5 = 0.0
+                q6 = 0.0
+                q7 = 0.0
+                
+                # Combine joint angles
+                q_solution = np.array([q1, q2, q3, q4, q5, q6, q7])
+                Q.append(q_solution)
+                
+                # Combine LS flags (OR operation)
+                overall_is_ls = is_LS_12 or is_LS_34
+                is_LS_vec.append(overall_is_ls)
+                
+                # Store solution indices used (wrist joints set to 0 index for consistency)
+                sol_ids_used['q12_idx'].append(i)
+                sol_ids_used['q34_idx'].append(j)
+                sol_ids_used['q56_idx'].append(0)  # Single solution for zero configuration
     
     # Convert to numpy array if we have solutions
     if Q:

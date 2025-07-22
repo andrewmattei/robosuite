@@ -141,7 +141,7 @@ class DualKinova3SRLEnv(ManipulationEnv):
             self.placement_initializer = UniformRandomSampler(
                 name="ObjectSampler",
                 mujoco_objects=self.ball,
-                x_range=[-0.03, 0.03],
+                x_range=[-0.53, -0.5],
                 y_range=[-0.03, 0.03],
                 rotation=None,
                 ensure_object_boundary_in_range=False,

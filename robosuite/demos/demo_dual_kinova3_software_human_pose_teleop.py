@@ -214,6 +214,14 @@ if __name__ == "__main__":
                 if step_count - last_status_print > 100:
                     engaged_status = "ENGAGED" if device.engaged else "WAITING FOR ENGAGEMENT"
                     print(f"Status: {engaged_status} (Step {step_count})")
+                    # Print gripper states if engaged and debug enabled
+                    if args.debug and device.engaged and input_ac_dict:
+                        for arm in active_robot.arms:
+                            gripper_key = f"{arm}_gripper"
+                            if gripper_key in input_ac_dict:
+                                gripper_val = input_ac_dict[gripper_key][0] if len(input_ac_dict[gripper_key]) > 0 else 0.0
+                                gripper_status = "CLOSED" if gripper_val > 0.5 else "OPEN"
+                                print(f"  {arm} gripper: {gripper_val:.2f} ({gripper_status})")
                     last_status_print = step_count
 
                 # Get the newest action from human pose
@@ -221,10 +229,13 @@ if __name__ == "__main__":
                     input_ac_dict = device.input2action()
                 except Exception as e:
                     print(f"Error getting input action: {e}")
-                    # Use neutral action on error
+                    # Use neutral action on error - 18 elements (SEW + identity rotation matrix)
                     input_ac_dict = {}
                     for arm in active_robot.arms:
-                        input_ac_dict[f"{arm}_sew"] = np.zeros(9)
+                        # 9 SEW positions (zeros) + 9 rotation matrix elements (identity)
+                        identity_rotation = np.array([1, 0, 0, 0, 1, 0, 0, 0, 1])
+                        input_ac_dict[f"{arm}_sew"] = np.concatenate([np.zeros(9), identity_rotation])
+                        input_ac_dict[f"{arm}_gripper"] = np.array([0.0])  # Open gripper on error
 
                 # If action is none, check if it's due to engagement or reset
                 if input_ac_dict is None:
@@ -234,10 +245,13 @@ if __name__ == "__main__":
                         break
                     # Otherwise, it's just waiting for engagement - continue without breaking
                     else:
-                        # Use neutral/hold action when not engaged
+                        # Use neutral/hold action when not engaged - 18 elements
                         input_ac_dict = {}
                         for arm in active_robot.arms:
-                            input_ac_dict[f"{arm}_sew"] = np.zeros(9)  # Neutral SEW positions
+                            # 9 SEW positions (zeros) + 9 rotation matrix elements (identity)
+                            identity_rotation = np.array([1, 0, 0, 0, 1, 0, 0, 0, 1])
+                            input_ac_dict[f"{arm}_sew"] = np.concatenate([np.zeros(9), identity_rotation])
+                            input_ac_dict[f"{arm}_gripper"] = np.array([0.0])  # Open gripper when not engaged
 
                 action_dict = deepcopy(input_ac_dict)
                 
@@ -247,8 +261,18 @@ if __name__ == "__main__":
                     if f"{arm}_sew" in input_ac_dict:
                         action_dict[arm] = input_ac_dict[f"{arm}_sew"]
                     else:
-                        # Fallback to neutral pose if no valid SEW action
-                        action_dict[arm] = np.zeros(9)  # 9 DOF for SEW positions
+                        # Fallback to neutral pose if no valid SEW action - 18 elements
+                        identity_rotation = np.array([1, 0, 0, 0, 1, 0, 0, 0, 1])
+                        action_dict[arm] = np.concatenate([np.zeros(9), identity_rotation])
+                    
+                    # Set gripper actions - handle both arm naming conventions
+                    gripper_key = f"{arm}_gripper"
+                    if gripper_key in input_ac_dict:
+                        # Use the gripper value from hand gesture detection
+                        action_dict[f"{arm}_gripper"] = input_ac_dict[gripper_key]
+                    else:
+                        # Default to open gripper if no gripper action specified
+                        action_dict[f"{arm}_gripper"] = np.array([0.0])
 
                 # Directly create action vector from current action_dict
                 env_action = active_robot.create_action_vector(action_dict)

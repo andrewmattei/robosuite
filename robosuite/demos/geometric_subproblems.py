@@ -198,7 +198,6 @@ def sp_1_numerical(p1, p2, k):
         theta: scalar angle in radians
         is_LS: boolean flag indicating if solution is least-squares
     """
-    import numpy as np
     
     # Compute norms
     norm_p1 = np.linalg.norm(p1)
