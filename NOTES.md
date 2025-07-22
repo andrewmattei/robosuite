@@ -425,3 +425,17 @@ graph TD
 
   This modular, multi-threaded pattern is highly scalable. You could add a third or fourth device (e.g., for haptic feedback or foot controls) just by creating another self-contained device class and adding it to the polling sequence in the main loop.
 ```
+
+```
+✦ I have completed the implementation.
+
+   1. `VRHeadsetDevice` Class: A new file robosuite/devices/vr_headset_device.py has been created. It handles all OpenVR communication in a separate thread.
+   2. Camera Update Logic: The helper functions get_calibration_matrix and update_viewer_camera_from_vr have been added to the top of the main teleoperation script.
+   3. Integration: The main script demo_dual_kinova3_software_human_pose_teleop.py now has:
+       * A --vr-camera command-line argument.
+       * Logic to instantiate and manage the VRHeadsetDevice if the flag is used.
+       * A polling call (vr_device.get_pose()) and an update call (update_viewer_camera_from_vr(...)) inside the main simulation loop.
+       * Proper cleanup logic to stop the vr_device thread on exit.
+
+  You can now run the script with the --vr-camera flag to use your VR headset for camera control. Make sure SteamVR is running before you start the script.
+```
