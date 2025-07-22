@@ -8,16 +8,24 @@ dual Kinova3 robots via SEW (Shoulder, Elbow, Wrist) mimicking. The human's arm
 movements are captured via webcam and translated to robot arm movements using
 body-centric coordinate extraction and inverse kinematics.
 
+An optional VR headset integration can be enabled to control the simulation
+camera's viewpoint.
+
 Usage:
     python demo_dual_kinova3_software_human_pose_teleop.py [options]
 
 Example:
+    # Run with default settings
     python demo_dual_kinova3_software_human_pose_teleop.py --environment DualKinova3SRLEnv --robots DualKinova3
+
+    # Run with VR-controlled camera
+    python demo_dual_kinova3_software_human_pose_teleop.py --vr-camera
 
 Requirements:
     - MediaPipe: pip install mediapipe
     - OpenCV: pip install opencv-python
     - Webcam or camera device
+    - For VR camera: TODO
 
 Controls:
     - Raise both arms to shoulder height: Start pose tracking
@@ -33,6 +41,7 @@ import mujoco
 from copy import deepcopy
 
 import robosuite as suite
+import robosuite.utils.transform_utils as T
 
 # Get the path of robosuite
 repo_path = os.path.abspath(os.path.join(os.path.abspath(__file__), os.pardir, os.pardir))
@@ -43,31 +52,41 @@ from robosuite.controllers.composite.composite_controller import WholeBody
 from robosuite.wrappers import VisualizationWrapper
 
 
-class TimeKeeper:
-    def __init__(self, target_fps=30):
-        self.target_fps = target_fps
-        self.last_time = time.time()
-        self.frame_count = 0
-        self.fps_sum = 0
+# VR Headset Camera Control Utilities
+def get_calibration_matrix(offset_pos, offset_yaw_degrees):
+    """
+    Creates a fixed transformation matrix to map VR headset coordinates
+    to MuJoCo world coordinates.
+    """
+    rotation = T.quat2mat(T.axisangle2quat([0, 0, 1], np.deg2rad(offset_yaw_degrees)))
+    translation = np.array(offset_pos)
+    
+    calib_matrix = np.eye(4)
+    calib_matrix[:3, :3] = rotation
+    calib_matrix[:3, 3] = translation
+    return calib_matrix
 
-    def should_step(self):
-        current_time = time.time()
-        time_elapsed = current_time - self.last_time
-        return time_elapsed >= (1.0 / self.target_fps)
 
-    def consume_step(self):
-        current_time = time.time()
-        time_elapsed = current_time - self.last_time
-        if time_elapsed > 0:
-            fps = 1.0 / time_elapsed
-            self.fps_sum += fps
-            self.frame_count += 1
-        self.last_time = current_time
-
-    def get_fps(self):
-        if self.frame_count > 0:
-            return self.fps_sum / self.frame_count
-        return 0
+def update_viewer_camera_from_vr(viewer, vr_pose_matrix, calibration_matrix):
+    """
+    Updates the free camera's pose from the VR headset's pose matrix.
+    
+    Args:
+        viewer: The mujoco.viewer instance.
+        vr_pose_matrix (np.array): A 3x4 numpy array from OpenVR.
+        calibration_matrix (np.array): A 4x4 matrix to align coordinate systems.
+    """
+    # Convert 3x4 matrix from OpenVR to a 4x4 homogeneous matrix
+    hmd_pose_4x4 = np.vstack([vr_pose_matrix, [0, 0, 0, 1]])
+    
+    # Apply the calibration to transform from VR space to MuJoCo space
+    mujoco_pose = calibration_matrix @ hmd_pose_4x4
+    
+    # MuJoCo's free camera uses 'pos' for position and 'mat' for the rotation matrix
+    viewer.cam.pos = mujoco_pose[:3, 3]
+    viewer.cam.mat = mujoco_pose[:3, :3]
+    viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+    viewer.cam.fixedcamid = -1  # Ensure we are using the free camera
 
 
 if __name__ == "__main__":
@@ -97,7 +116,23 @@ if __name__ == "__main__":
         type=int,
         help="Sleep when simulation runs faster than specified frame rate; 30 fps is real time.",
     )
+    parser.add_argument("--vr-camera", action="store_true", help="Enable VR headset for controlling the simulation camera.")
     args = parser.parse_args()
+
+    # VR Camera Setup
+    vr_device = None
+    if args.vr_camera:
+        try:
+            from robosuite.devices.vr_headset_device import VRHeadsetDevice
+            vr_device = VRHeadsetDevice()
+            vr_device.start()
+            # This matrix is a starting point. You may need to adjust it for your setup.
+            # It moves the camera back, up, and rotates it to face the scene.
+            CALIBRATION_MATRIX = get_calibration_matrix(offset_pos=[-0.5, 0, 1.5], offset_yaw_degrees=180)
+            print("VR Camera Enabled. Make sure SteamVR is running.")
+        except Exception as e:
+            print(f"Failed to initialize VR headset device. Continuing without VR camera. Error: {e}")
+            vr_device = None
 
     # Get controller config
     controller_config = load_composite_controller_config(
@@ -187,11 +222,12 @@ if __name__ == "__main__":
         data = env.sim.data._data
 
         with mujoco.viewer.launch_passive(model, data) as viewer:
-            # Set initial camera parameters for good view of dual arms
-            viewer.cam.distance = 3.0
-            viewer.cam.azimuth = 0
-            viewer.cam.elevation = -95
-            viewer.cam.lookat[:] = np.array([-0.5, 0.0, 0.0])
+            # Set initial camera parameters for good view of dual arms if not using VR
+            if vr_device is None:
+                viewer.cam.distance = 3.0
+                viewer.cam.azimuth = 0
+                viewer.cam.elevation = -95
+                viewer.cam.lookat[:] = np.array([-0.5, 0.0, 0.0])
 
             print("Simulation viewer launched. Ready for human pose teleoperation!")
             
@@ -215,6 +251,12 @@ if __name__ == "__main__":
                     engaged_status = "ENGAGED" if device.engaged else "WAITING FOR ENGAGEMENT"
                     print(f"Status: {engaged_status} (Step {step_count})")
                     last_status_print = step_count
+
+                # VR Camera Update
+                if vr_device:
+                    vr_pose = vr_device.get_pose()
+                    if vr_pose is not None:
+                        update_viewer_camera_from_vr(viewer, vr_pose, CALIBRATION_MATRIX)
 
                 # Get the newest action from human pose
                 try:
@@ -273,6 +315,8 @@ if __name__ == "__main__":
 
     # Cleanup
     print("\nCleaning up...")
+    if vr_device:
+        vr_device.stop()
     env.close()  # Close environment first
     device.stop()  # Stop device and close OpenCV windows
     print("Demo completed successfully!")
