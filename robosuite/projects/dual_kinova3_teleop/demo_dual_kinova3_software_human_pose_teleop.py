@@ -35,7 +35,7 @@ from copy import deepcopy
 import robosuite as suite
 
 # Get the path of robosuite
-repo_path = os.path.abspath(os.path.join(os.path.abspath(__file__), os.pardir, os.pardir))
+repo_path = os.path.abspath(os.path.join(os.path.abspath(__file__), os.pardir, os.pardir, os.pardir))
 dual_kinova3_sew_config_path = os.path.join(repo_path, "controllers", "config", "robots", "dualkinova3_sew_mimic.json")
 
 from robosuite import load_composite_controller_config

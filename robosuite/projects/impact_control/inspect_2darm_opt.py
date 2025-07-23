@@ -2,7 +2,7 @@ import numpy as np
 import casadi as cs
 import matplotlib.pyplot as plt
 import os
-import robosuite.demos.optimizing_max_jacobian as omj
+import robosuite.projects.impact_control.optimizing_max_jacobian as omj
 import h5py
 import pathlib
 
@@ -57,7 +57,7 @@ solution = omj.optimize_trajectory_cartesian_accel_flex_pose(p_f_des, v_f_des, m
                         boundary_epsilon)
 omj.display_and_save_solution(solution, 'opt_trajectory_max_cartesian_accel_flex_pose.npy')
 # check the offscreen simulation
-from robosuite.demos.planar_arm_contact_ctrl import robot_xml, RobotSystem
+from robosuite.projects.impact_control.planar_arm_contact_ctrl import robot_xml, RobotSystem
 import mujoco
 # === Initialize the robot system === #
 model = mujoco.MjModel.from_xml_string(robot_xml)

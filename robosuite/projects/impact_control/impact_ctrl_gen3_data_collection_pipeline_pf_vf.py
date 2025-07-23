@@ -3,8 +3,8 @@ import numpy as np
 import datetime
 import h5py
 import robosuite as suite
-import robosuite.demos.optimizing_gen3_arm as opt
-import robosuite.demos.gen3_contact_ctrl as gen3_ctrl
+import robosuite.projects.shared_scripts.optimizing_gen3_arm as opt
+import robosuite.projects.impact_control.gen3_contact_ctrl as gen3_ctrl
 
 # === Initialize robot environment === #
 

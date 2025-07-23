@@ -1,18 +1,18 @@
 import pinocchio as pin
 import pinocchio.casadi as cpin
 
-from robosuite.demos.geometric_subproblems import *
+from robosuite.projects.shared_scripts.geometric_subproblems import *
 
 np.set_printoptions(precision=3, suppress=True)
 import os
 import traceback
 from matplotlib import pyplot as plt
 
-import robosuite.demos.optimizing_gen3_arm as opt
+import robosuite.projects.shared_scripts.optimizing_gen3_arm as opt
 # Import the SEW Stereo class for spherical-elbow-wrist kinematics
-from robosuite.demos.sew_stereo import SEWStereo, SEWStereoSymbolic, build_sew_stereo_casadi_functions
+from robosuite.projects.shared_scripts.sew_stereo import SEWStereo, SEWStereoSymbolic, build_sew_stereo_casadi_functions
 
-kinova_path = os.path.join(os.path.dirname(__file__), os.pardir, 'models', 'assets', 'robots',
+kinova_path = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, 'models', 'assets', 'robots',
                                 'dual_kinova3', 'leonardo.urdf')
 
 

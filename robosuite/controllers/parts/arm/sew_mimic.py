@@ -2,9 +2,9 @@ import numpy as np
 from collections.abc import Iterable
 
 from robosuite.controllers.parts.controller import Controller
-from robosuite.demos.geometric_kinematics_gen3_7dof import IK_2R_2R_3R_SEW, filter_and_select_closest_solution, get_robot_SEW_from_q, rot_numerical
-import robosuite.demos.optimizing_gen3_arm as opt
-from robosuite.demos.geometric_kinematics_gen3_7dof import kinova_path
+from robosuite.projects.shared_scripts.geometric_kinematics_gen3_7dof import IK_2R_2R_3R_SEW, filter_and_select_closest_solution, get_robot_SEW_from_q, rot_numerical
+import robosuite.projects.shared_scripts.optimizing_gen3_arm as opt
+from robosuite.projects.shared_scripts.geometric_kinematics_gen3_7dof import kinova_path
 
 
 class SEWMimicController(Controller):

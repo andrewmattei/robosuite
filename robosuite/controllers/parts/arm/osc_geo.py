@@ -7,10 +7,10 @@ import robosuite.utils.transform_utils as T
 from robosuite.controllers.parts.controller import Controller
 from robosuite.utils.control_utils import *
 
-from robosuite.demos.geometric_kinematics_gen3_7dof import IK_2R_2R_3R_numerical, kinova_path, get_elbow_angle_kinova, filter_and_select_closest_solution
-from robosuite.demos.geometric_kinematics_gen3_7dof import IK_2R_2R_3R_auto_elbow
-from robosuite.demos.sew_stereo import SEWStereo
-import robosuite.demos.optimizing_gen3_arm as opt
+from robosuite.projects.shared_scripts.geometric_kinematics_gen3_7dof import IK_2R_2R_3R_numerical, kinova_path, get_elbow_angle_kinova, filter_and_select_closest_solution
+from robosuite.projects.shared_scripts.geometric_kinematics_gen3_7dof import IK_2R_2R_3R_auto_elbow
+from robosuite.projects.shared_scripts.sew_stereo import SEWStereo
+import robosuite.projects.shared_scripts.optimizing_gen3_arm as opt
 
 # Supported impedance modes
 IMPEDANCE_MODES = {"fixed", "variable", "variable_kp"}

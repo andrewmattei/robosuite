@@ -4,8 +4,8 @@ import datetime
 import h5py
 import mujoco
 
-from robosuite.demos.planar_arm_contact_ctrl import robot_xml, RobotSystem
-import robosuite.demos.optimizing_max_jacobian as opt
+from robosuite.projects.impact_control.planar_arm_contact_ctrl import robot_xml, RobotSystem
+import robosuite.projects.impact_control.optimizing_max_jacobian as opt
 
 # smaller sample data size
 ONLY_FINAL_STATES = True

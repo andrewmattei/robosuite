@@ -10,8 +10,8 @@ import traceback
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'demos'))
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'utils'))
 
-import robosuite.demos.optimizing_gen3_arm as opt
-import robosuite.demos.gen3_contact_ctrl_on_hardware as hw_ctrl
+import robosuite.projects.shared_scripts.optimizing_gen3_arm as opt
+import robosuite.projects.impact_control.gen3_contact_ctrl_on_hardware as hw_ctrl
 import robosuite.utils.tool_box_no_ros as tb
 import robosuite.utils.kortex_utilities as kortex_utils
 

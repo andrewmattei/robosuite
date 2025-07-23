@@ -9,7 +9,7 @@ from scipy.interpolate import interp1d
 import os
 from matplotlib import pyplot as plt
 
-urdf_path = os.path.join(os.path.dirname(__file__), os.pardir, 'models', 'assets', 'robots',
+urdf_path = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, 'models', 'assets', 'robots',
                                 'dual_kinova3', 'leonardo.urdf')
 
 # ------------------------ Model loading ------------------------

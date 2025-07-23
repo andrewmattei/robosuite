@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 import casadi as cs
 import pinocchio as pin
 import pinocchio.casadi as cpin
-import robosuite.demos.optimizing_gen3_arm as opt
+import robosuite.projects.shared_scripts.optimizing_gen3_arm as opt
 import robosuite.utils.tool_box_no_ros as tb
 
 # Load reference trajectory

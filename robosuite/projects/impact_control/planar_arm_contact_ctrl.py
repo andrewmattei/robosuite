@@ -6,9 +6,9 @@ import matplotlib.pyplot as plt
 import os
 
 import casadi as cs
-from robosuite.demos.optimizing_max_jacobian import formulate_symbolic_dynamic_matrices, optimize_trajectory
-from robosuite.demos.optimizing_max_jacobian import match_trajectories, compute_jacobian
-import robosuite.demos.optimizing_max_jacobian as omj
+from robosuite.projects.impact_control.optimizing_max_jacobian import formulate_symbolic_dynamic_matrices, optimize_trajectory
+from robosuite.projects.impact_control.optimizing_max_jacobian import match_trajectories, compute_jacobian
+import robosuite.projects.impact_control.optimizing_max_jacobian as omj
 import imageio, cv2
 
 # Robot parameters (defined at the top of the file)
