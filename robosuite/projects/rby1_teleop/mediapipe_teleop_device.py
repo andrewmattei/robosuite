@@ -2,6 +2,13 @@
 MediaPipe-based teleoperation device for RBY1 robot.
 Extracts human SEW (Shoulder, Elbow, Wrist) coordinates and wrist poses from camera stream.
 Works standalone without robosuite framework.
+Coordinates in robot body-centric frame:
+    +X - front
+    +Y - left
+    +Z - up
+For both hands/wrists, when in zero config (arm by body side), follows the same coordinates as above.
+Author: Chuizheng Kong
+Date created: 2025-07-27
 """
 
 import cv2

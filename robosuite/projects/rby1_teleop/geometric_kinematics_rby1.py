@@ -1,3 +1,10 @@
+"""
+Geometric kinematics functions for the RBY1 robot.
+This module also includes functions to load the RBY1 model and extract frame transformations.
+Author: Chuizheng Kong
+Date created: 2025-07-27
+"""
+
 import pinocchio as pin
 import numpy as np
 np.set_printoptions(precision=3, suppress=True)

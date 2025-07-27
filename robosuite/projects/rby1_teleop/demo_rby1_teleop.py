@@ -1,6 +1,8 @@
 """
 RBY1 robot teleoperation using MediaPipe pose estimation.
 Integrates MediaPipe device and SEW mimic controller for human pose teleoperation.
+Author: Chuizheng Kong
+Date created: 2025-07-27
 """
 
 from pathlib import Path

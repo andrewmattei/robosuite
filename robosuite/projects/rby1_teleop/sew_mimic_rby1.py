@@ -8,6 +8,9 @@ Features:
 - Gravity compensation for all torso joints (torso_0 to torso_5)
 - Joint-space PD control for arm movements
 - Position holding when not engaged
+
+Author: Chuizheng Kong
+Date created: 2025-07-27
 """
 
 import numpy as np
