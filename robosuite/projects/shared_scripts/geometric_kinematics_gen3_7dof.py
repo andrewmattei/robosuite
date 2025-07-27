@@ -667,7 +667,7 @@ def IK_2R_2R_3R_auto_elbow(R_0_7, p_0_T, sew_stereo, model_transforms, q_prev=No
 
 def IK_2R_2R_3R_SEW(S_human, E_human, W_human, model_transforms, sol_ids=None, R_0_T_kinova=None):
     """
-    Numerical inverse kinematics function that matches robot arm SEW (Shoulder-Elbow-Wrist) 
+    Geometric inverse kinematics function that matches robot arm SEW (Shoulder-Elbow-Wrist) 
     angles with human poses in a forward fashion.
     
     The approach:
@@ -698,6 +698,13 @@ def IK_2R_2R_3R_SEW(S_human, E_human, W_human, model_transforms, sol_ids=None, R
         human_vectors: dict with human pose information
         sol_ids_used: dict with the solution indices actually used (for initialization)
     """
+
+    ##### Notation on position #######
+    # p_ij: position vector from frame i to j in local frame i with at q_i, q_i+1,...q_j-1 = 0
+    # p_ij_0: position vector from frame i to j in base frame 0
+    # p_i_j: position vector with q_i, q_i+1,...q_j-1 = (the actual value) calculated in "base frame" by default
+    # p_i_j_k: position vector with q_i, q_i+1,...q_j-1 = (the actual value) calculated in "frame k"
+    ##################################
     
     Q = []
     is_LS_vec = []

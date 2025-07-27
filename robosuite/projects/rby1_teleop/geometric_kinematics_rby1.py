@@ -2,6 +2,7 @@ import pinocchio as pin
 import numpy as np
 np.set_printoptions(precision=3, suppress=True)
 import os
+import robosuite.projects.shared_scripts.geometric_subproblems as gsp
 
 # urdf_path = os.path.join(os.path.dirname(__file__), 'rby1a', 'urdf', 'model.urdf')  # has some problem with "capsule"
 urdf_path = os.path.join(os.path.dirname(__file__), 'rbyxhand_v2', 'model_modified.urdf')
@@ -220,7 +221,7 @@ def IK_3R_R_3R_SEW(S_human, E_human, W_human, model_transforms, sol_ids=None, R_
 
     Q = []
     is_LS_vec = []
-    sol_ids_used = {'q12_idx': [], 'q34_idx': [], 'q56_idx': []}
+    sol_ids_used = {'q12_idx': [], 'q56_idx': []}
     
     # Extract frame transformations
     R_local = model_transforms['R']
@@ -235,16 +236,40 @@ def IK_3R_R_3R_SEW(S_human, E_human, W_human, model_transforms, sol_ids=None, R_
     p_45, R_45, h5 = p_local[4], R_local[4], h_local[4]  # Joint 4 to joint 5
     p_56, R_56, h6 = p_local[5], R_local[5], h_local[5]  # Joint 5 to joint 6
     p_67, R_67, h7 = p_local[6], R_local[6], h_local[6]  # Joint 6 to joint 7
-    
+
+    # Robot shoulder position in base frame
+    S_robot_actual = p_01
+
+    # Robot shoulder-to-elbow vector at zero configuration
+    R_02 = R_01 @ R_12 
+    R_03 = R_02 @ R_23
+    p_12_0 = R_01 @ p_12
+    p_23_0 = R_02 @ p_23
+    p_34_0 = R_03 @ p_34
+    p_04 = p_01 + p_12_0 + p_23_0 + p_34_0  # Position of joint 4 in base frame
+    E_robot_zero = p_04  # Robot elbow position in base frame
+    SE_robot_zero = E_robot_zero - S_robot_actual  # Robot shoulder to elbow vector at zero configuration
+
+    # Robot elbow-to-wrist vector at zero configuration
+    R_04 = R_03 @ R_34
+    R_05 = R_04 @ R_45
+    p_45_0 = R_04 @ p_45
+    p_56_0 = R_05 @ p_56
+    p_06 = p_04 + p_45_0 + p_56_0  # Position of joint 6 in base frame
+    W_robot_zero = p_06  # Robot wrist position in base frame
+    EW_robot_zero = W_robot_zero - E_robot_zero  # Robot elbow to wrist vector at zero configuration
+
+
+    # === STAGE 1: Define elbow frame to lock joint 3 orientation ===
     # Calculate human pose vectors
     SE_human = E_human - S_human  # Human shoulder to elbow vector
     EW_human = W_human - E_human  # Human elbow to wrist vector
     SW_human = W_human - S_human  # Human shoulder to wrist vector
     
     # Normalize human vectors
-    SE_human_norm = SE_human / (np.linalg.norm(SE_human) + 1e-8)
-    EW_human_norm = EW_human / (np.linalg.norm(EW_human) + 1e-8)
-    SW_human_norm = SW_human / (np.linalg.norm(SW_human) + 1e-8)
+    SE_human_norm = SE_human / (np.linalg.norm(SE_human) + 1e-12)
+    EW_human_norm = EW_human / (np.linalg.norm(EW_human) + 1e-12)
+    SW_human_norm = SW_human / (np.linalg.norm(SW_human) + 1e-12)
 
     # TODO: experiment with singularity management with entry point memory, 
     #       since our spherical range of motion is limited, we can almost do a "wrap-to-pi" style index switching
@@ -268,26 +293,160 @@ def IK_3R_R_3R_SEW(S_human, E_human, W_human, model_transforms, sol_ids=None, R_
         rE_ex = np.cross(rE_ey, rE_ez)
 
     R_0_E = np.column_stack((rE_ex, rE_ey, rE_ez))  # Elbow frame rotation in base frame
-    R_0_3 = R_0_E # locking the robot elbow axis facing to the human elbow frame
 
-    # Robot shoulder position in base frame
-    S_robot = p_01
+    # calculate the angle between h3 and rE_ez in joint 3 frame (need R_3E)
+    # this can be done in zero config first
+    SE_robot_zero_3 = R_03.T @ -SE_robot_zero  # Shoulder to elbow vector in joint 3 frame
+    theta_3E = np.arctan2(SE_robot_zero_3[0], SE_robot_zero_3[2])
 
-    # Robot shoulder-to-elbow vector at zero configuration
-    R_02 = R_01 @ R_12 
-    R_03 = R_02 @ R_23
-    p_12_0 = R_01 @ p_12
-    p_23_0 = R_02 @ p_23
-    p_34_0 = R_03 @ p_34
-    p_04 = p_01 + p_12_0 + p_23_0 + p_34_0  # Position of joint 4 in base frame
-    E_robot_zero = p_04  # Robot elbow position in base frame
-    SE_robot_zero = E_robot_zero - S_robot  # Robot shoulder to elbow vector at zero configuration
+    # create R_3E using rotation about the y-axis
+    ey = np.array([0.0, 1.0, 0.0])
+    R_3E = gsp.rot_numerical(ey, -theta_3E)
+    R_0_3 = R_0_E @ R_3E.T
 
-    # Robot elbow-to-wrist vector at zero configuration
-    R_04 = R_03 @ R_34
-    R_05 = R_04 @ R_45
-    p_45_0 = R_04 @ p_45
-    p_56_0 = R_05 @ p_56
-    p_06 = p_04 + p_45_0 + p_56_0  # Position of joint 6 in base frame
-    W_robot_zero = p_06  # Robot wrist position in base frame
-    EW_robot_zero = W_robot_zero - E_robot_zero  # Robot elbow to wrist vector at zero configuration
+    # === STAGE 2: Solve for joint 1, 2, 3 angles using subproblem 2 + subproblem 1 ===
+    h3_actual_1 = R_01.T @ R_0_3 @ h3  # Joint 3 axis in base frame
+    h3_zero_1 = R_01.T @ R_03 @ h3
+    h2_1 = R_12 @ h2
+    theta1_12, theta2_12, is_LS_12 = gsp.sp_2_numerical(h3_actual_1, h3_zero_1, -h1, h2_1)
+    
+
+    # If sol_ids provided, use specific solution indices
+    if sol_ids is not None and 'q12_idx' in sol_ids:
+        q12_indices = [sol_ids['q12_idx']]
+    else:
+        q12_indices = range(len(theta1_12))
+    
+    # Iterate through joint 1,2 solutions
+    for i in q12_indices:
+        if i >= len(theta1_12):
+            continue  # Skip if index out of range
+            
+        q1 = theta1_12[i]
+        q2 = theta2_12[i]
+
+        # Build rotation matrices up to joint 2
+        R_0_1 = R_01 @ gsp.rot_numerical(h1, q1)  # Joint 1 rotation
+        R_1_2 = R_12 @ gsp.rot_numerical(h2, q2)  # Joint 2 rotation
+        R_0_2 = R_0_1 @ R_1_2  # Combined rotation from base to joint 2
+
+        # use subproblem 1 to solve for joint 3 angle
+        # now that the z-axis (h3) of joint 3 frame is aligned, need to align x-axis (h2) in joint 3 frame
+        h2_actual_3 = R_0_3.T @ R_0_2 @ h2  # Joint 2 axis in joint 3 frame
+        h2_zero_3 = R_23.T @ h2  # Joint 2 axis in zero configuration
+        q3, q3_is_LS = gsp.sp_1_numerical(h2_zero_3, h2_actual_3, -h3)
+
+        # === STAGE 3: Solve for joint 4 angle using subproblem 1 ===
+        # calculate human elbow-wrist vector in joint 4 frame
+        EW_human_norm_4 = R_34.T @ R_0_3.T @ EW_human_norm  # Human elbow to wrist vector in joint 4 frame
+        EW_robot_zero_4 = R_34.T @ R_03.T @ EW_robot_zero  # Robot elbow to wrist vector at zero configuration
+        EW_robot_zero_4_norm = EW_robot_zero_4 / (np.linalg.norm(EW_robot_zero_4))
+        q4, q4_is_LS = gsp.sp_1_numerical(EW_robot_zero_4_norm, EW_human_norm_4, h4)
+
+        # === STAGE 4: Solve for joint 5,6,7 angles using subproblem 2 + subproblem 1 ===
+        if R_0_7 is not None:
+            # Calculate wrist rotation in joint 5 frame
+            R_3_4 = R_34 @ gsp.rot_numerical(h4, q4)
+            R_0_4 = R_0_3 @ R_3_4  # Rotation from base to joint 4
+            h6_5 = R_56 @ h6  # Joint 6 axis in joint 5 frame
+
+            # desired joint 7 axis in frame 5 based on desired R_0_7
+            h7_actual_5 = (R_0_4 @ R_45).T @ R_0_7 @ h7  # Joint 7 axis in joint 5 frame
+
+            # joint 7 axis in zero configuration in frame 5
+            h7_zero_5 = R_56 @ R_67 @ h7
+
+            # Use subproblem 2 to find q5, q6
+            theta5_56, theta6_56, is_LS_56 = gsp.sp_2_numerical(h7_actual_5, h7_zero_5, -h5, h6_5)
+
+            # If sol_ids provided, use specific solution indices for q5, q6
+            if sol_ids is not None and 'q56_idx' in sol_ids:
+                q56_indices = [sol_ids['q56_idx']]
+            else:
+                q56_indices = range(len(theta5_56))
+
+            # Iterate through joint 5,6 solutions
+            for j in q56_indices:
+                if j >= len(theta5_56):
+                    continue
+
+                q5 = theta5_56[j]
+                q6 = theta6_56[j]
+
+                # Build rotation matrices up to joint 6
+                R_4_5 = R_45 @ gsp.rot_numerical(h5, q5)
+                R_5_6 = R_56 @ gsp.rot_numerical(h6, q6)
+                R_0_6 = R_0_4 @ R_4_5 @ R_5_6  # Combined rotation from base to joint 6
+
+                # Use subproblem 1 to solve for joint 7 angle
+                h6_actual_7 = R_0_7.T @ R_0_6 @ h6  # Joint 6 axis in joint 7 frame
+                h6_zero_7 = R_67.T @ h6  # Joint 6 axis in zero configuration
+                q7, q7_is_LS = gsp.sp_1_numerical(h6_zero_7, h6_actual_7, -h7)
+
+                # Combine joint angles
+                q_solution = np.array([q1, q2, q3, q4, q5, q6, q7])
+                Q.append(q_solution)
+                
+                # Combine LS flags (OR operation)
+                overall_is_ls = is_LS_12 or q3_is_LS or q4_is_LS or is_LS_56 or q7_is_LS
+                is_LS_vec.append(overall_is_ls)
+                
+                # Store solution indices used
+                sol_ids_used['q12_idx'].append(i)
+                sol_ids_used['q56_idx'].append(j)
+        else:
+            q5 = 0.0
+            q6 = 0.0
+            q7 = 0.0
+
+            # Combine joint angles
+            q_solution = np.array([q1, q2, q3, q4, q5, q6, q7])
+            Q.append(q_solution)
+            
+            # Combine LS flags (OR operation)
+            overall_is_ls = is_LS_12 or q3_is_LS or q4_is_LS
+            is_LS_vec.append(overall_is_ls)
+
+            sol_ids_used['q12_idx'].append(i)
+            sol_ids_used['q56_idx'].append(0)
+
+    # Convert to numpy array if we have solutions
+    if Q:
+        Q = np.column_stack(Q)  # 7 x num_solutions
+    else:
+        Q = np.zeros((7, 0))  # Empty array with correct shape
+    
+    # Store human vectors for analysis
+    human_vectors = {
+        'S_human': S_human,
+        'E_human': E_human,
+        'W_human': W_human,
+        'SE_human': SE_human,
+        'EW_human': EW_human,
+        'SW_human': SW_human,
+        'SE_human_norm': SE_human_norm,
+        'EW_human_norm': EW_human_norm,
+        'SW_human_norm': SW_human_norm,
+        'SE_robot_zero': SE_robot_zero,
+        'EW_robot_zero': EW_robot_zero
+    }
+    
+    return Q, is_LS_vec, human_vectors, sol_ids_used
+
+if __name__ == "__main__":
+    # Example usage
+    model, data = load_rby1_model()
+    model_transforms = get_frame_transforms_from_pinocchio(model, "right_arm")
+    
+    # Define human pose (example values)
+    S_human = np.array([0.0, -0.2, 0.0])
+    E_human = np.array([0.0, -0.2, -0.25])
+    W_human = np.array([0.0, -0.2, -0.5])
+
+    R_0_7 = gsp.rot_numerical(-np.array([0.0, 1.0, 0.0]), np.pi/4)  # Example wrist rotation
+    
+    # Call the IK function
+    Q, is_LS_vec, human_vectors, sol_ids_used = IK_3R_R_3R_SEW(S_human, E_human, W_human, model_transforms, R_0_7=R_0_7)
+
+    print("Joint angles (Q):", Q)
+    print("Is LS solution:", is_LS_vec) 

@@ -6,6 +6,10 @@
     <velocity ctrllimited="true" />
     <position ctrllimited="true" kp="4000" kv="400" />
 
+    <default class="torso_joint">
+      <position ctrllimited="true" kp="8000" kv="800" />
+    </default>
+
     <default class="visual">
       <geom group="2" type="mesh" contype="0" conaffinity="0" />
     </default>
@@ -59,12 +63,12 @@
     <velocity name="left_wheel_act" joint="left_wheel" ctrlrange="-3.14 3.14" />
     <velocity name="right_wheel_act" joint="right_wheel" ctrlrange="-3.14 3.14" />
 
-    <position name="link1_act" joint="torso_0" ctrlrange="-0.349066 0.349066" />
-    <position name="link2_act" joint="torso_1" ctrlrange="-1.0472 1.52173" />
-    <position name="link3_act" joint="torso_2" ctrlrange="-2.47837 1.5708" />
-    <position name="link4_act" joint="torso_3" ctrlrange="-0.785398 1.5708" />
-    <position name="link5_act" joint="torso_4" ctrlrange="-0.523599 0.523599" />
-    <position name="link6_act" joint="torso_5" ctrlrange="-1.5708 1.5708" />
+    <position name="link1_act" joint="torso_0" ctrlrange="-0.349066 0.349066" class="torso_joint" />
+    <position name="link2_act" joint="torso_1" ctrlrange="-1.0472 1.52173" class="torso_joint" />
+    <position name="link3_act" joint="torso_2" ctrlrange="-2.47837 1.5708" class="torso_joint" />
+    <position name="link4_act" joint="torso_3" ctrlrange="-0.785398 1.5708" class="torso_joint" />
+    <position name="link5_act" joint="torso_4" ctrlrange="-0.523599 0.523599" class="torso_joint" />
+    <position name="link6_act" joint="torso_5" ctrlrange="-1.5708 1.5708" class="torso_joint" />
 
     <position name="right_arm_1_act" joint="right_arm_0" ctrlrange="-2.35619 2.35619" />
     <position name="right_arm_2_act" joint="right_arm_1" ctrlrange="-3.14159 0.05" />
