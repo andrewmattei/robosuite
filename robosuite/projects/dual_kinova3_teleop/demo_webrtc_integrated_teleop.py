@@ -6,8 +6,26 @@ import mujoco
 import numpy as np
 
 import robosuite as suite
-from robosuite.devices.webrtc_body_pose_device import WebRTCBodyPoseDevice
+from robosuite.devices.webrtc_body_pose_device import Bone, WebRTCBodyPoseDevice
 from robosuite.wrappers import VisualizationWrapper
+
+
+def custom_process_bones_to_action(bones: list[Bone]) -> dict:
+    """
+    A custom function to demonstrate how to override the default action processing.
+    """
+    print("Using custom bone processing logic!")
+    action_dict = {}
+    # Use the first bone's position to control the left arm
+    if bones:
+        pos = np.array(bones[0].position)
+        identity_rotation = np.array([1, 0, 0, 0, 1, 0, 0, 0, 1])
+        action_dict["left_sew"] = np.concatenate([pos, np.zeros(6), identity_rotation])
+        action_dict["right_sew"] = np.concatenate([np.zeros(9), identity_rotation])
+        action_dict["left_gripper"] = 0
+        action_dict["right_gripper"] = 0
+    return action_dict
+
 
 # --- Main Simulation Script ---
 
@@ -36,7 +54,7 @@ if __name__ == "__main__":
     np.set_printoptions(formatter={"float": lambda x: "{0:0.3f}".format(x)})
 
     # 2. Set up the device.
-    device = WebRTCBodyPoseDevice(env=env)
+    device = WebRTCBodyPoseDevice(env=env, process_bones_to_action_fn=custom_process_bones_to_action)
     env.sim.add_render_callback("controller_logging", device.render_callback)
     device.start_control()
 

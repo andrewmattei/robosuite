@@ -67,47 +67,6 @@ class RobosuiteTeleopState:
         with self._lock:
             return self.pose_action.copy() if self.pose_action else None
 
-def process_bones_to_action(bones: list[Bone]) -> dict:
-    """
-    **Placeholder**: Converts raw bone data into a robosuite action dictionary.
-    This is the core translation logic. You need to implement this based on
-    your VR system's bone IDs and the specific robosuite controller's needs.
-    For the 'WHOLE_BODY_MIMIC' controller, you need to provide absolute
-    Shoulder-Elbow-Wrist (SEW) coordinates.
-    Args:
-        bones: A list of Bone objects from the VR client.
-    Returns:
-        A dictionary with actions for the robot arms and grippers.
-    """
-    # --- TODO: Implement your bone-to-action mapping here. ---
-    # Example: Find the wrist bones, extract their positions, and map them
-    # to the robot's workspace. Determine gripper state from finger bones.
-    
-    # For demonstration, we return randomized mock data.
-    action_dict = {}
-    identity_rotation = np.array([1, 0, 0, 0, 1, 0, 0, 0, 1])
-    action_dict["left_sew"] = np.concatenate([np.random.rand(9) * 0.1, identity_rotation])
-    action_dict["right_sew"] = np.concatenate([np.random.rand(9) * 0.1, identity_rotation])
-    action_dict["left_gripper"] = np.random.rand(1)
-    action_dict["right_gripper"] = np.random.rand(1)
-    return action_dict
-
-def on_body_pose_message(message: bytes, state: RobosuiteTeleopState):
-    """
-    Callback for the 'body_pose' data channel. This is called by the
-    WebRTCServer whenever a message is received.
-    """
-    if not state.is_connected:
-        state.is_connected = True
-        print("\n[WebRTC] Body pose data channel connected and receiving data.")
-
-    try:
-        bones = deserialize_pose_data(message)
-        if bones:
-            action_dict = process_bones_to_action(bones)
-            state.update_pose(action_dict)
-    except Exception as e:
-        print(f"Error processing body pose message: {e}")
 
 class StateFactory:
     """A factory to create and hold a reference to the state object."""
@@ -125,11 +84,16 @@ class WebRTCBodyPoseDevice(Device):
     A device to control a robot using body pose data from a WebRTC stream.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, process_bones_to_action_fn=None, **kwargs):
         super().__init__(**kwargs)
         self.state_factory = StateFactory()
 
-        datachannel_handlers = {"body_pose": on_body_pose_message}
+        if process_bones_to_action_fn is None:
+            self.process_bones_to_action_fn = self._default_process_bones_to_action
+        else:
+            self.process_bones_to_action_fn = process_bones_to_action_fn
+
+        datachannel_handlers = {"body_pose": self.on_body_pose_message}
         self.server = WebRTCServer(
             datachannel_handlers=datachannel_handlers,
             state_factory=self.state_factory,
@@ -143,6 +107,49 @@ class WebRTCBodyPoseDevice(Device):
         print("The WebRTC server is running in the background.")
         print("Connect your VR client to this machine on port 8080.")
         print("=" * 80)
+
+    @staticmethod
+    def _default_process_bones_to_action(bones: list[Bone]) -> dict:
+        """
+        **Placeholder**: Converts raw bone data into a robosuite action dictionary.
+        This is the core translation logic. You need to implement this based on
+        your VR system's bone IDs and the specific robosuite controller's needs.
+        For the 'WHOLE_BODY_MIMIC' controller, you need to provide absolute
+        Shoulder-Elbow-Wrist (SEW) coordinates.
+        Args:
+            bones: A list of Bone objects from the VR client.
+        Returns:
+            A dictionary with actions for the robot arms and grippers.
+        """
+        # --- TODO: Implement your bone-to-action mapping here. ---
+        # Example: Find the wrist bones, extract their positions, and map them
+        # to the robot's workspace. Determine gripper state from finger bones.
+        
+        # For demonstration, we return randomized mock data.
+        action_dict = {}
+        identity_rotation = np.array([1, 0, 0, 0, 1, 0, 0, 0, 1])
+        action_dict["left_sew"] = np.concatenate([np.random.rand(9) * 0.1, identity_rotation])
+        action_dict["right_sew"] = np.concatenate([np.random.rand(9) * 0.1, identity_rotation])
+        action_dict["left_gripper"] = np.random.rand(1)
+        action_dict["right_gripper"] = np.random.rand(1)
+        return action_dict
+
+    def on_body_pose_message(self, message: bytes, state: RobosuiteTeleopState):
+        """
+        Callback for the 'body_pose' data channel. This is called by the
+        WebRTCServer whenever a message is received.
+        """
+        if not state.is_connected:
+            state.is_connected = True
+            print("\n[WebRTC] Body pose data channel connected and receiving data.")
+
+        try:
+            bones = deserialize_pose_data(message)
+            if bones:
+                action_dict = self.process_bones_to_action_fn(bones)
+                state.update_pose(action_dict)
+        except Exception as e:
+            print(f"Error processing body pose message: {e}")
 
     def start_control(self):
         """
