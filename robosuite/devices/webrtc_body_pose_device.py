@@ -2,11 +2,106 @@ import struct
 import threading
 import time
 from copy import deepcopy
+import enum
 
 import numpy as np
 from xr_360_camera_streamer.streaming import WebRTCServer
 
 from robosuite.devices.device import Device
+class FullBodyBoneId(enum.IntEnum):
+    """Specifies the bone IDs for a full body skeleton, including legs and feet."""
+
+    FullBody_Start = 0
+    FullBody_Root = 0
+    FullBody_Hips = 1
+    FullBody_SpineLower = 2
+    FullBody_SpineMiddle = 3
+    FullBody_SpineUpper = 4
+    FullBody_Chest = 5
+    FullBody_Neck = 6
+    FullBody_Head = 7
+    FullBody_LeftShoulder = 8
+    FullBody_LeftScapula = 9
+    FullBody_LeftArmUpper = 10
+    FullBody_LeftArmLower = 11
+    FullBody_LeftHandWristTwist = 12
+    FullBody_RightShoulder = 13
+    FullBody_RightScapula = 14
+    FullBody_RightArmUpper = 15
+    FullBody_RightArmLower = 16
+    FullBody_RightHandWristTwist = 17
+    FullBody_LeftHandPalm = 18
+    FullBody_LeftHandWrist = 19
+    FullBody_LeftHandThumbMetacarpal = 20
+    FullBody_LeftHandThumbProximal = 21
+    FullBody_LeftHandThumbDistal = 22
+    FullBody_LeftHandThumbTip = 23
+    FullBody_LeftHandIndexMetacarpal = 24
+    FullBody_LeftHandIndexProximal = 25
+    FullBody_LeftHandIndexIntermediate = 26
+    FullBody_LeftHandIndexDistal = 27
+    FullBody_LeftHandIndexTip = 28
+    FullBody_LeftHandMiddleMetacarpal = 29
+    FullBody_LeftHandMiddleProximal = 30
+    FullBody_LeftHandMiddleIntermediate = 31
+    FullBody_LeftHandMiddleDistal = 32
+    FullBody_LeftHandMiddleTip = 33
+    FullBody_LeftHandRingMetacarpal = 34
+    FullBody_LeftHandRingProximal = 35
+    FullBody_LeftHandRingIntermediate = 36
+    FullBody_LeftHandRingDistal = 37
+    FullBody_LeftHandRingTip = 38
+    FullBody_LeftHandLittleMetacarpal = 39
+    FullBody_LeftHandLittleProximal = 40
+    FullBody_LeftHandLittleIntermediate = 41
+    FullBody_LeftHandLittleDistal = 42
+    FullBody_LeftHandLittleTip = 43
+    FullBody_RightHandPalm = 44
+    FullBody_RightHandWrist = 45
+    FullBody_RightHandThumbMetacarpal = 46
+    FullBody_RightHandThumbProximal = 47
+    FullBody_RightHandThumbDistal = 48
+    FullBody_RightHandThumbTip = 49
+    FullBody_RightHandIndexMetacarpal = 50
+    FullBody_RightHandIndexProximal = 51
+    FullBody_RightHandIndexIntermediate = 52
+    FullBody_RightHandIndexDistal = 53
+    FullBody_RightHandIndexTip = 54
+    FullBody_RightHandMiddleMetacarpal = 55
+    FullBody_RightHandMiddleProximal = 56
+    FullBody_RightHandMiddleIntermediate = 57
+    FullBody_RightHandMiddleDistal = 58
+    FullBody_RightHandMiddleTip = 59
+    FullBody_RightHandRingMetacarpal = 60
+    FullBody_RightHandRingProximal = 61
+    FullBody_RightHandRingIntermediate = 62
+    FullBody_RightHandRingDistal = 63
+    FullBody_RightHandRingTip = 64
+    FullBody_RightHandLittleMetacarpal = 65
+    FullBody_RightHandLittleProximal = 66
+    FullBody_RightHandLittleIntermediate = 67
+    FullBody_RightHandLittleDistal = 68
+    FullBody_RightHandLittleTip = 69
+    FullBody_LeftUpperLeg = 70
+    FullBody_LeftLowerLeg = 71
+    FullBody_LeftFootAnkleTwist = 72
+    FullBody_LeftFootAnkle = 73
+    FullBody_LeftFootSubtalar = 74
+    FullBody_LeftFootTransverse = 75
+    FullBody_LeftFootBall = 76
+    FullBody_RightUpperLeg = 77
+    FullBody_RightLowerLeg = 78
+    FullBody_RightFootAnkleTwist = 79
+    FullBody_RightFootAnkle = 80
+    FullBody_RightFootSubtalar = 81
+    FullBody_RightFootTransverse = 82
+    FullBody_RightFootBall = 83
+    FullBody_End = 84
+
+    @classmethod
+    def _missing_(cls, value):
+        return "FullBody_Unknown"
+
 
 # --- Data Structures and Deserialization ---
 # This section is adapted from the 360_server_unity.py example to process
