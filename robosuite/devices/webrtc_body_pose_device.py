@@ -84,8 +84,8 @@ class WebRTCBodyPoseDevice(Device):
     A device to control a robot using body pose data from a WebRTC stream.
     """
 
-    def __init__(self, process_bones_to_action_fn=None, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, env, process_bones_to_action_fn=None, **kwargs):
+        super().__init__(env)
         self.state_factory = StateFactory()
 
         if process_bones_to_action_fn is None:
@@ -107,6 +107,13 @@ class WebRTCBodyPoseDevice(Device):
         print("The WebRTC server is running in the background.")
         print("Connect your VR client to this machine on port 8080.")
         print("=" * 80)
+
+    @property
+    def is_connected(self):
+        """
+        Returns true if the WebRTC client is connected.
+        """
+        return self.state_factory.instance is not None and self.state_factory.instance.is_connected
 
     @staticmethod
     def _default_process_bones_to_action(bones: list[Bone]) -> dict:
@@ -164,20 +171,36 @@ class WebRTCBodyPoseDevice(Device):
         Returns the current state of the device, a dictionary of pos, orn, grasp, and reset.
         """
         shared_state = self.state_factory.instance
-        if shared_state is None or not shared_state.is_connected:
+        if not self.is_connected:
             return None
 
         pose_action = shared_state.get_pose()
         if pose_action is None:
             return None
+        return pose_action
 
-        # This is a placeholder. The actual mapping from pose_action to the
-        # specific controller inputs needs to be implemented.
-        state = {
-            "dpos": np.zeros(3),  # Delta position
-            "rotation": np.eye(3),  # Absolute rotation
-            "raw_drotation": np.zeros(3),
-            "grasp": 0,
-            "reset": False,
-        }
-        return state
+    def input2action(self, mirror_actions=False):
+        """
+        Converts an input from an active device into a valid action sequence that can be fed into an env.step() call
+        If a reset is triggered from the device, immediately returns None. Else, returns the appropriate action
+        Args:
+            mirror_actions (bool): actions corresponding to viewing robot from behind.
+                first axis: left/right. second axis: back/forward. third axis: down/up.
+        Returns:
+            Optional[Dict]: Dictionary of actions to be fed into env.step()
+                            if reset is triggered, returns None
+        """
+
+        input_ac_dict = self.get_controller_state()
+
+        if input_ac_dict is None:
+            return None
+
+        # Create the action vector for robosuite
+        active_robot = self.env.robots[0]
+        action_dict = deepcopy(input_ac_dict)
+        for arm in active_robot.arms:
+            action_dict[arm] = input_ac_dict.get(f"{arm}_sew")
+            action_dict[f"{arm}_gripper"] = input_ac_dict.get(f"{arm}_gripper")
+
+        return active_robot.create_action_vector(action_dict)

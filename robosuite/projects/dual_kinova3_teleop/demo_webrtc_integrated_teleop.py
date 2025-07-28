@@ -55,13 +55,11 @@ if __name__ == "__main__":
 
     # 2. Set up the device.
     device = WebRTCBodyPoseDevice(env=env, process_bones_to_action_fn=custom_process_bones_to_action)
-    env.sim.add_render_callback("controller_logging", device.render_callback)
-    device.start_control()
 
 
     # 3. Wait for the VR client to connect.
     print("\nWaiting for a VR client to connect...")
-    while not device.state_factory.instance or not device.state_factory.instance.is_connected:
+    while not device.is_connected:
         time.sleep(0.5)
     
     print("Client connected! Starting robosuite simulation.")
