@@ -1,0 +1,4 @@
+[submodule "References/xr-360-camera-streamer"]
+	path = References/xr-360-camera-streamer
+	url = https://github.com/yunho-c/xr-360-camera-streamer
+	branch = body-pose
