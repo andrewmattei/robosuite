@@ -1,4 +1,5 @@
 import argparse
+import os
 import time
 from copy import deepcopy
 
@@ -6,6 +7,12 @@ import mujoco
 import numpy as np
 
 import robosuite as suite
+
+# Get the path of robosuite
+repo_path = os.path.abspath(os.path.join(os.path.abspath(__file__), os.pardir, os.pardir, os.pardir))
+dual_kinova3_sew_config_path = os.path.join(repo_path, "controllers", "config", "robots", "dualkinova3_sew_mimic.json")
+
+from robosuite import load_composite_controller_config
 from robosuite.devices.webrtc_body_pose_device import Bone, WebRTCBodyPoseDevice, FullBodyBoneId
 from robosuite.wrappers import VisualizationWrapper
 
@@ -34,8 +41,8 @@ def custom_process_bones_to_action(bones: list[Bone]) -> dict:
     # --- Gripper state ---
     left_gripper_dist = np.linalg.norm(left_thumb_tip - left_index_tip) if left_thumb_tip is not None and left_index_tip is not None else 0.1
     right_gripper_dist = np.linalg.norm(right_thumb_tip - right_index_tip) if right_thumb_tip is not None and right_index_tip is not None else 0.1
-    left_gripper_action = 1 if left_gripper_dist > 0.05 else -1
-    right_gripper_action = 1 if right_gripper_dist > 0.05 else -1
+    left_gripper_action = np.array([1]) if left_gripper_dist > 0.05 else np.array([-1])
+    right_gripper_action = np.array([1]) if right_gripper_dist > 0.05 else np.array([-1])
 
     # --- Arm control (absolute SEW) ---
     identity_rotation = np.array([1, 0, 0, 0, 1, 0, 0, 0, 1])
@@ -58,14 +65,17 @@ def custom_process_bones_to_action(bones: list[Bone]) -> dict:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Integrated WebRTC teleoperation demo for robosuite")
     parser.add_argument("--environment", type=str, default="DualKinova3SRLEnv")
-    parser.add_argument("--robots", nargs=":", type=str, default="DualKinova3")
-    parser.add_argument("--controller", type=str, default="WHOLE_BODY_MIMIC")
+    parser.add_argument("--robots", nargs="+", type=str, default="DualKinova3")
+    parser.add_argument("--controller", type=str, default=dual_kinova3_sew_config_path)
     parser.add_argument("--device", type=str, default="keyboard")
     parser.add_argument("--max_fr", default=30, type=int)
     args = parser.parse_args()
 
     # 1. Create the robosuite environment.
-    controller_config = suite.load_controller_config(default_controller=args.controller)
+    controller_config = load_composite_controller_config(
+        controller=args.controller,
+        robot=args.robots[0],
+    )
     env = suite.make(
         args.environment,
         robots=args.robots,
