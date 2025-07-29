@@ -7,6 +7,7 @@ import mujoco
 import numpy as np
 
 import robosuite as suite
+from scipy.spatial.transform import Rotation
 
 # Get the path of robosuite
 repo_path = os.path.abspath(os.path.join(os.path.abspath(__file__), os.pardir, os.pardir, os.pardir))
@@ -18,6 +19,88 @@ from robosuite.wrappers import VisualizationWrapper
 
 
 
+def _get_body_centric_coordinates(bones: list[Bone]) -> dict:
+    """
+    Convert bone positions to a body-centric coordinate system.
+    """
+    bone_positions = {b.id: np.array(b.position) for b in bones}
+    bone_rotations = {b.id: np.array(b.rotation) for b in bones}
+
+    # Get key body landmarks
+    left_shoulder = bone_positions.get(FullBodyBoneId.FullBody_LeftShoulder)
+    right_shoulder = bone_positions.get(FullBodyBoneId.FullBody_RightShoulder)
+    hips = bone_positions.get(FullBodyBoneId.FullBody_Hips)
+
+    if left_shoulder is None or right_shoulder is None or hips is None:
+        return None
+
+    # Calculate body center
+    shoulder_center = (left_shoulder + right_shoulder) / 2
+    hip_center = hips
+
+    # Use shoulder center as origin for upper body tracking
+    body_origin = shoulder_center
+
+    # Create body-centric coordinate frame
+    # Y-axis: right to left (shoulder line)
+    y_axis = left_shoulder - right_shoulder
+    y_axis = y_axis / (np.linalg.norm(y_axis) + 1e-8)  # normalize
+
+    # Z-axis: up direction (shoulder to hip, inverted)
+    torso_vector = hip_center - shoulder_center
+    z_axis = -torso_vector / (np.linalg.norm(torso_vector) + 1e-8)  # up is positive Z
+
+    # X-axis: forward direction (cross product)
+    x_axis = np.cross(y_axis, z_axis)
+    x_axis = x_axis / (np.linalg.norm(x_axis) + 1e-8)
+
+    # Create transformation matrix from world to body-centric frame
+    rotation_matrix = np.column_stack([x_axis, y_axis, z_axis])
+
+    def transform_to_body_frame(world_pos):
+        """Transform a world position to body-centric coordinates."""
+        # Translate to body origin
+        translated = world_pos - body_origin
+        # Rotate to body frame
+        body_pos = rotation_matrix.T @ translated
+        return body_pos
+
+    # Extract SEW coordinates in body-centric frame
+    sew_coordinates = {}
+
+    for side in ['left', 'right']:
+        side_key_pascal = side.capitalize()
+
+        shoulder_id = getattr(FullBodyBoneId, f'FullBody_{side_key_pascal}Shoulder')
+        elbow_id = getattr(FullBodyBoneId, f'FullBody_{side_key_pascal}ArmLower')
+        wrist_id = getattr(FullBodyBoneId, f'FullBody_{side_key_pascal}HandWrist')
+
+        shoulder_pos = bone_positions.get(shoulder_id)
+        elbow_pos = bone_positions.get(elbow_id)
+        wrist_pos = bone_positions.get(wrist_id)
+
+        if shoulder_pos is None or elbow_pos is None or wrist_pos is None:
+            sew_coordinates[side] = None
+            continue
+
+        # Transform to body-centric coordinates
+        S_body = transform_to_body_frame(shoulder_pos)
+        E_body = transform_to_body_frame(elbow_pos)
+        W_body = transform_to_body_frame(wrist_pos)
+
+        # Get wrist rotation
+        wrist_rot = bone_rotations.get(wrist_id)
+
+        sew_coordinates[side] = {
+            'S': S_body,
+            'E': E_body,
+            'W': W_body,
+            'wrist_rot': wrist_rot
+        }
+
+    return sew_coordinates
+
+
 def custom_process_bones_to_action(bones: list[Bone]) -> dict:
     """
     A custom function to demonstrate how to override the default action processing.
@@ -25,18 +108,13 @@ def custom_process_bones_to_action(bones: list[Bone]) -> dict:
     action_dict = {}
 
     # --- Get bone positions ---
+    # --- Get bone positions and rotations ---
     bone_positions = {b.id: np.array(b.position) for b in bones}
-    left_wrist = bone_positions.get(FullBodyBoneId.FullBody_LeftHandWrist)
-    right_wrist = bone_positions.get(FullBodyBoneId.FullBody_RightHandWrist)
+    bone_rotations = {b.id: np.array(b.rotation) for b in bones}
     left_thumb_tip = bone_positions.get(FullBodyBoneId.FullBody_LeftHandThumbTip)
     left_index_tip = bone_positions.get(FullBodyBoneId.FullBody_LeftHandIndexTip)
     right_thumb_tip = bone_positions.get(FullBodyBoneId.FullBody_RightHandThumbTip)
     right_index_tip = bone_positions.get(FullBodyBoneId.FullBody_RightHandIndexTip)
-
-    # --- Safety checks ---
-    if left_wrist is None or right_wrist is None:
-        print("Warning: Wrist bones not found. Skipping action.")
-        return None
 
     # --- Gripper state ---
     left_gripper_dist = np.linalg.norm(left_thumb_tip - left_index_tip) if left_thumb_tip is not None and left_index_tip is not None else 0.1
@@ -45,11 +123,44 @@ def custom_process_bones_to_action(bones: list[Bone]) -> dict:
     right_gripper_action = np.array([1]) if right_gripper_dist > 0.05 else np.array([-1])
 
     # --- Arm control (absolute SEW) ---
-    identity_rotation = np.array([1, 0, 0, 0, 1, 0, 0, 0, 1])
-    # Note: This is a simplified mapping. You may need to scale and offset the
-    # bone positions to match the robot's workspace.
-    left_sew = np.concatenate([left_wrist, np.zeros(6), identity_rotation])
-    right_sew = np.concatenate([right_wrist, np.zeros(6), identity_rotation])
+    sew_coords = _get_body_centric_coordinates(bones)
+
+    if sew_coords is None or sew_coords['left'] is None or sew_coords['right'] is None:
+        print("Warning: Could not calculate SEW coordinates. Skipping action.")
+        return None
+
+    # --- Get wrist rotations ---
+    left_wrist_rot_quat = sew_coords['left']['wrist_rot']
+    right_wrist_rot_quat = sew_coords['right']['wrist_rot']
+
+    if left_wrist_rot_quat is None or right_wrist_rot_quat is None:
+        print("Warning: Could not get wrist rotation. Skipping action.")
+        return None
+
+    # Convert to scipy Rotation objects
+    left_wrist_r = Rotation.from_quat(left_wrist_rot_quat)
+    right_wrist_r = Rotation.from_quat(right_wrist_rot_quat)
+
+    # --- Gripper Orientation Offset ---
+    # The human hand's natural "forward" is different from the robot's gripper.
+    # We apply a 90-degree rotation offset around the Z-axis to align them.
+    z_offset_90_deg = Rotation.from_euler('z', 90, degrees=True)
+    
+    # Apply the offset
+    left_wrist_r_oriented = left_wrist_r * z_offset_90_deg
+    right_wrist_r_oriented = right_wrist_r * z_offset_90_deg
+
+    # Convert final rotation to rotation matrix for the controller
+    left_rot_matrix = left_wrist_r_oriented.as_matrix().flatten()
+    right_rot_matrix = right_wrist_r_oriented.as_matrix().flatten()
+
+    # --- Assemble final action ---
+    left_sew_pos = np.concatenate([sew_coords['left']['S'], sew_coords['left']['E'], sew_coords['left']['W']])
+    right_sew_pos = np.concatenate([sew_coords['right']['S'], sew_coords['right']['E'], sew_coords['right']['W']])
+
+    left_sew = np.concatenate([left_sew_pos, left_rot_matrix])
+    right_sew = np.concatenate([right_sew_pos, right_rot_matrix])
+
 
     action_dict["left_sew"] = left_sew
     action_dict["right_sew"] = right_sew

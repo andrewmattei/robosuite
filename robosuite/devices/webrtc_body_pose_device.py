@@ -8,6 +8,8 @@ import numpy as np
 from xr_360_camera_streamer.streaming import WebRTCServer
 
 from robosuite.devices.device import Device
+
+
 class FullBodyBoneId(enum.IntEnum):
     """Specifies the bone IDs for a full body skeleton, including legs and feet."""
 
@@ -107,8 +109,10 @@ class FullBodyBoneId(enum.IntEnum):
 # This section is adapted from the 360_server_unity.py example to process
 # incoming data from a VR client.
 
+
 class Bone:
     """A simple data structure to hold deserialized bone data."""
+
     def __init__(
         self,
         id: int,
@@ -122,9 +126,29 @@ class Bone:
     def __repr__(self):
         return f"Bone(id={self.id}, pos={self.position}, rot={self.rotation})"
 
+
+def convert_unity_to_right_handed_z_up(
+    position: tuple[float, float, float],
+    rotation: tuple[float, float, float, float],
+) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
+    """
+    Converts position and rotation from Unity's left-handed, Y-up coordinate system
+    to a right-handed, Z-up coordinate system (+X Forward, +Y Left, +Z Up).
+    """
+    # Position conversion: Unity (x,y,z) -> (z, -x, y)
+    new_position = (position[2], -position[0], position[1])
+
+    # Rotation quaternion conversion: Unity (qx,qy,qz,qw) -> (-qz, qx, -qy, qw)
+    qx, qy, qz, qw = rotation
+    new_rotation = (-qz, qx, -qy, qw)
+
+    return new_position, new_rotation
+
+
 def deserialize_pose_data(data: bytes) -> list[Bone]:
     """
-    Deserializes a binary pose data stream.
+    Deserializes a binary pose data stream from Unity, converting to a
+    right-handed, Z-up coordinate system.
     Format: int32 (bone_count), then for each bone: int32 (id) + 7*float32 (pos/rot).
     """
     bones = []
@@ -137,18 +161,31 @@ def deserialize_pose_data(data: bytes) -> list[Bone]:
                 break  # Avoid reading past the buffer
             bone_data = struct.unpack_from("<i7f", data, offset)
             offset += 32
-            bones.append(Bone(bone_data[0], tuple(bone_data[1:4]), tuple(bone_data[4:8])))
+
+            position = tuple(bone_data[1:4])
+            rotation = tuple(bone_data[4:8])
+
+            # Convert coordinate system from Unity to Robosuite
+            new_position, new_rotation = convert_unity_to_right_handed_z_up(
+                position, rotation
+            )
+
+            bones.append(Bone(bone_data[0], new_position, new_rotation))
+
     except struct.error as e:
         print(f"Error deserializing pose data: {e}")
     return bones
 
+
 # --- Robosuite and WebRTC Integration ---
+
 
 class RobosuiteTeleopState:
     """
     Thread-safe state to share data from the WebRTC server thread
     to the main robosuite simulation thread.
     """
+
     def __init__(self):
         self._lock = threading.Lock()
         self.pose_action = None
@@ -165,8 +202,10 @@ class RobosuiteTeleopState:
 
 class StateFactory:
     """A factory to create and hold a reference to the state object."""
+
     def __init__(self):
         self.instance = None
+
     def __call__(self):
         # Called by WebRTCServer to create a state for a new peer.
         # We store the instance so the main thread can access it.
@@ -174,13 +213,21 @@ class StateFactory:
             self.instance = RobosuiteTeleopState()
         return self.instance
 
+
 class WebRTCBodyPoseDevice(Device):
     """
     A device to control a robot using body pose data from a WebRTC stream.
     """
 
     def __init__(self, env, process_bones_to_action_fn=None, **kwargs):
-        super().__init__(env)
+        if env is not None:
+            super().__init__(env)
+        else:
+            self.env = None
+            self.all_robot_arms = []
+            self.all_robot_grippers = []
+            self.num_robot_arms = 0
+            self.num_robot_grippers = 0
         self.state_factory = StateFactory()
 
         if process_bones_to_action_fn is None:
@@ -208,7 +255,10 @@ class WebRTCBodyPoseDevice(Device):
         """
         Returns true if the WebRTC client is connected.
         """
-        return self.state_factory.instance is not None and self.state_factory.instance.is_connected
+        return (
+            self.state_factory.instance is not None
+            and self.state_factory.instance.is_connected
+        )
 
     @staticmethod
     def _default_process_bones_to_action(bones: list[Bone]) -> dict:
@@ -226,12 +276,16 @@ class WebRTCBodyPoseDevice(Device):
         # --- TODO: Implement your bone-to-action mapping here. ---
         # Example: Find the wrist bones, extract their positions, and map them
         # to the robot's workspace. Determine gripper state from finger bones.
-        
+
         # For demonstration, we return randomized mock data.
         action_dict = {}
         identity_rotation = np.array([1, 0, 0, 0, 1, 0, 0, 0, 1])
-        action_dict["left_sew"] = np.concatenate([np.random.rand(9) * 0.1, identity_rotation])
-        action_dict["right_sew"] = np.concatenate([np.random.rand(9) * 0.1, identity_rotation])
+        action_dict["left_sew"] = np.concatenate(
+            [np.random.rand(9) * 0.1, identity_rotation]
+        )
+        action_dict["right_sew"] = np.concatenate(
+            [np.random.rand(9) * 0.1, identity_rotation]
+        )
         action_dict["left_gripper"] = np.random.rand(1)
         action_dict["right_gripper"] = np.random.rand(1)
         return action_dict
@@ -292,6 +346,10 @@ class WebRTCBodyPoseDevice(Device):
             return None
 
         # Create the action vector for robosuite
+        if self.env is None:
+            return input_ac_dict
+
+        # Create the action vector for robosuite environments
         active_robot = self.env.robots[0]
         action_dict = deepcopy(input_ac_dict)
         for arm in active_robot.arms:
