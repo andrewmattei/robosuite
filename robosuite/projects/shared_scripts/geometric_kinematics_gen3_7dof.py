@@ -2,6 +2,7 @@ import pinocchio as pin
 import pinocchio.casadi as cpin
 
 from robosuite.projects.shared_scripts.geometric_subproblems import *
+import robosuite.utils.tool_box_no_ros as tb
 
 np.set_printoptions(precision=3, suppress=True)
 import os
@@ -957,6 +958,270 @@ def IK_2R_2R_3R_SEW(S_human, E_human, W_human, model_transforms, sol_ids=None, R
     }
     
     return Q, is_LS_vec, human_vectors, sol_ids_used
+
+
+def IK_2R_2R_3R_SEW_wrist_lock(S_human, E_human, W_human, model_transforms, sol_ids=None, R_0_T_kinova=None,q7_bias=0):
+    """
+    Geometric inverse kinematics function that matches robot arm SEW (Shoulder-Elbow-Wrist) 
+    angles with human poses in a forward fashion.
+    
+    The approach:
+    1. Joints 1,2: Use subproblem 2 to orient shoulder segment toward human shoulder-elbow direction
+    2. Joints 3,4: Use subproblem 2 to orient elbow segment toward human elbow-wrist direction  
+    3. Joints 5,6,7: Set to zeros by default, or if R_0_T_kinova is provided, use subproblem 2 for q5,q6 
+       and subproblem 1 for q7 to match end-effector orientation
+    
+    Args:
+        S_human: 3x1 numpy array - human shoulder position in robot base frame
+        E_human: 3x1 numpy array - human elbow position in robot base frame
+        W_human: 3x1 numpy array - human wrist position in robot base frame
+        model_transforms: dict from get_frame_transforms_from_pinocchio() containing:
+            - 'R': list of 3x3 rotation matrices [R_0_1, R_1_2, ..., R_6_7, R_7_T]
+            - 'p': list of 3x1 position vectors [p_0_1, p_1_2, ..., p_6_7, p_7_T]
+            - 'joint_names': list of joint/frame names
+        sol_ids: dict with solution indices for consistent solution selection:
+            - 'q12_idx': index for joints 1,2 solution (0 or 1)
+            - 'q34_idx': index for joints 3,4 solution (0 or 1)
+            - 'q56_idx': index for joints 5,6 solution (when R_0_T_kinova is provided)
+            If None, returns all solutions
+        R_0_T_kinova: 3x3 numpy array - desired end-effector orientation in robot base frame
+               If provided, will solve for wrist joints (q5,q6,q7) to match this orientation
+    
+    Returns:
+        Q: numpy array of joint angle solutions (7 x num_solutions)
+        is_LS_vec: list of boolean flags indicating LS solutions
+        human_vectors: dict with human pose information
+        sol_ids_used: dict with the solution indices actually used (for initialization)
+    """
+
+    ##### Notation on position #######
+    # p_ij: position vector from frame i to j in local frame i with at q_i, q_i+1,...q_j-1 = 0
+    # p_ij_0: position vector from frame i to j in base frame 0
+    # p_i_j: position vector with q_i, q_i+1,...q_j-1 = (the actual value) calculated in "base frame" by default
+    # p_i_j_k: position vector with q_i, q_i+1,...q_j-1 = (the actual value) calculated in "frame k"
+    ##################################
+    
+    Q = []
+    is_LS_vec = []
+    sol_ids_used = {'q12_idx': [], 'q34_idx': [], 'q56_idx': []}
+    
+    # Extract frame transformations
+    R_local = model_transforms['R']
+    p_local = model_transforms['p']
+    
+    # Build position vectors following the standard implementation
+    p_01, R_01 = p_local[0], R_local[0]  # base to joint 1
+    p_12, R_12 = p_local[1], R_local[1]  # joint 1 to joint 2
+    p_23, R_23 = p_local[2], R_local[2]  # joint 2 to joint 3
+    p_34, R_34 = p_local[3], R_local[3]  # joint 3 to joint 4
+    p_45, R_45 = p_local[4], R_local[4]  # joint 4 to joint 5
+    p_56, R_56 = p_local[5], R_local[5]  # joint 5 to joint 6
+    p_67, R_67 = p_local[6], R_local[6]  # joint 6 to joint 7
+    p_7T, R_7T = p_local[7], R_local[7]  # joint 7 to end-effector
+    
+    # Calculate human pose vectors
+    SE_human = E_human - S_human  # Human shoulder to elbow vector
+    EW_human = W_human - E_human  # Human elbow to wrist vector
+    SW_human = W_human - S_human  # Human shoulder to wrist vector
+    
+    # Normalize human vectors
+    SE_human_norm = SE_human / (np.linalg.norm(SE_human) + 1e-8)
+    EW_human_norm = EW_human / (np.linalg.norm(EW_human) + 1e-8)
+    SW_human_norm = SW_human / (np.linalg.norm(SW_human) + 1e-8)
+
+    # Robot shoulder position (intersection of joint 1 and 2 axes)
+    p_12_0 = R_01 @ p_12  # vector at q1 = 0
+    p_1_S_0 = np.zeros(3)
+    p_1_S_0[2] = p_12_0[2]  # shoulder at the intersection of h1 and h2
+    S_robot = p_01 + p_1_S_0  # Robot shoulder position in base frame
+    
+    # Robot shoulder-to-elbow vector at zero configuration
+    p_S2_0 = p_12_0 - p_1_S_0  # Vector from shoulder to joint 2
+    R_02 = R_01 @ R_12
+    R_03 = R_02 @ R_23
+    p_3E = np.zeros(3)
+    p_3E[2] = p_34[2]  # elbow at the intersection of h3 and h4
+    p_2E_0 = R_02 @ p_23 + R_03 @ p_3E  # vector at q2 = 0, q3 = 0
+    SE_robot_zero = p_S2_0 + p_2E_0  # Robot shoulder-to-elbow vector at zero config
+    E_robot = S_robot + SE_robot_zero # Robot elbow position at zero configuration in base frame
+    
+    p_E4_0 = R_03 @ (p_34 - p_3E)  # Vector from elbow to joint 4 at zero config
+    
+    # Robot elbow-to-wrist vector at zero configuration
+    R_04 = R_03 @ R_34
+    R_05 = R_04 @ R_45
+    R_06 = R_05 @ R_56
+    p_45_0 = R_04 @ p_45
+    p_56_0 = R_05 @ p_56
+    p_67_0 = R_06 @ p_67
+    p_W7_0 = np.zeros(3)
+    p_W7_0[2] = p_67_0[2]  # wrist at the intersection of h6 and h7
+    p_6W_0 = p_67_0 - p_W7_0
+    EW_robot_zero = p_E4_0 + p_45_0 + p_56_0 + p_6W_0  # Robot elbow-to-wrist vector at zero config
+
+
+    
+    # Joint axes (all joints rotate about z-axis in their local frames)
+    ez = np.array([0, 0, 1])
+    
+    # === STAGE 1: Solve joints 1,2 to match shoulder-elbow direction ===
+    # Project human SE vector to joint 1 frame for subproblem 2
+    SE_human_1 = R_01.T @ SE_human_norm  # Human SE vector in joint 1 frame
+    SE_robot_1 = R_01.T @ SE_robot_zero  # Robot SE vector in joint 1 frame at zero config
+    SE_robot_1_norm = SE_robot_1 / np.linalg.norm(SE_robot_1)
+    
+    # Joint axes in joint 1 frame
+    h_1 = ez  # Joint 1 axis in joint 1 frame
+    h_2 = R_12 @ ez  # Joint 2 axis in joint 1 frame
+    
+    # Use subproblem 2 to find q1, q2 that align robot SE with human SE
+    theta1_12, theta2_12, is_LS_12 = sp_2_numerical(SE_human_1, SE_robot_1_norm, -h_1, h_2)
+    
+    # Ensure we have arrays (sp_2_numerical might return scalars)
+    if np.isscalar(theta1_12):
+        theta1_12 = np.array([theta1_12])
+    if np.isscalar(theta2_12):
+        theta2_12 = np.array([theta2_12])
+    
+    # If sol_ids provided, use specific solution indices
+    if sol_ids is not None and 'q12_idx' in sol_ids:
+        q12_indices = [sol_ids['q12_idx']]
+    else:
+        q12_indices = range(len(theta1_12))
+    
+    # Iterate through joint 1,2 solutions
+    for i in q12_indices:
+        if i >= len(theta1_12):
+            continue  # Skip if index out of range
+            
+        q1 = theta1_12[i]
+        q2 = theta2_12[i]
+        
+        # Build rotation matrices up to joint 2
+        R_0_1 = R_01 @ rot_numerical(ez, q1)  # Joint 1 rotation
+        R_1_2 = R_12 @ rot_numerical(ez, q2)  # Joint 2 rotation
+        R_0_2 = R_0_1 @ R_1_2
+        
+        # === STAGE 2: Solve joints 3,4 to match elbow-wrist direction ===
+        # Calculate actual robot elbow position after applying q1, q2
+        p_S2_actual = R_0_1 @ (p_12 - p_1_S_0)  # Actual vector from shoulder to joint 2
+        p_2E_actual = R_0_2 @ p_23 + (R_0_2 @ R_23) @ p_3E
+        E_robot_actual = S_robot + p_S2_actual + p_2E_actual  # Actual robot elbow position
+        
+        # Project human EW vector to joint 3 frame for subproblem 2
+        R_0_3 = R_0_2 @ R_23
+        EW_human_3 = R_0_3.T @ EW_human_norm  # Human EW vector in joint 3 frame
+        EW_robot_3 = R_03.T @ EW_robot_zero  # Robot EW vector in joint 3 frame at zero config
+        EW_robot_3_norm = EW_robot_3 / np.linalg.norm(EW_robot_3)
+        
+        # Joint axes in joint 3 frame
+        h_3 = ez  # Joint 3 axis in 3 frame
+        h_4 = R_34 @ ez  # Joint 4 axis in 3 frame
+        
+        # Use subproblem 2 to find q3, q4 that align robot EW with human EW
+        theta1_34, theta2_34, is_LS_34 = sp_2_numerical(EW_human_3, EW_robot_3_norm, -h_3, h_4)
+        
+        # Ensure we have arrays
+        if np.isscalar(theta1_34):
+            theta1_34 = np.array([theta1_34])
+        if np.isscalar(theta2_34):
+            theta2_34 = np.array([theta2_34])
+        
+        # If sol_ids provided, use specific solution indices
+        if sol_ids is not None and 'q34_idx' in sol_ids:
+            q34_indices = [sol_ids['q34_idx']]
+        else:
+            q34_indices = range(len(theta1_34))
+        
+        # Iterate through joint 3,4 solutions
+        for j in q34_indices:
+            if j >= len(theta1_34):
+                continue  # Skip if index out of range
+                
+            q3 = theta1_34[j]
+            q4 = theta2_34[j]
+            
+            # === STAGE 3: Set joints 5,6,7 ===
+            # Build rotation matrices up to joint 4
+            R_0_3 = R_0_2 @ R_23
+            R_2_3 = R_23 @ rot_numerical(ez, q3)
+            R_3_4 = R_34 @ rot_numerical(ez, q4)
+            R_0_4 = R_0_2 @ R_2_3 @ R_3_4
+            
+            if R_0_T_kinova is not None:
+                # Use the provided end-effector orientation to solve for wrist joints
+                # Following the same approach as IK_2R_2R_3R_numerical()
+                R_0_7 = R_0_T_kinova @ R_7T.T
+
+                # normalize R_0_7 using nearest orthogonalization
+                U_0_7,_, V_0_7_T = np.linalg.svd(R_0_7)
+                R_0_7 = U_0_7 @ V_0_7_T
+                
+                # Decompose R_0_7 into rpy in R_0_5 frame with zero q5 config
+                R_0_5_zero = R_0_4 @ R_45
+                R_567 = R_0_5_zero.T @ R_0_7  # Rotation from joint 5 to joint 7 in zero configuration
+                r_x, r_y, r_z = tb.rotation_matrix_to_euler(R_567)
+                q5 = r_z
+                q6 = -r_y 
+                q7 = q7_bias
+                # if q7_bias > 0: # right side (really not the best way lol)
+                #     print("r_x {:.2f}, r_y {:.2f}, r_z {:.2f}".format(r_x, r_y, r_z))
+                    
+                # Combine joint angles
+                q_solution = np.array([q1, q2, q3, q4, q5, q6, q7])
+                Q.append(q_solution)
+                
+                # Combine LS flags (OR operation)
+                overall_is_ls = is_LS_12 or is_LS_34
+                is_LS_vec.append(overall_is_ls)
+                
+                # Store solution indices used
+                sol_ids_used['q12_idx'].append(i)
+                sol_ids_used['q34_idx'].append(j)
+                sol_ids_used['q56_idx'].append(0)
+            else:
+                # Default behavior: set wrist joints to zero
+                q5 = 0.0
+                q6 = 0.0
+                q7 = 0.0
+                
+                # Combine joint angles
+                q_solution = np.array([q1, q2, q3, q4, q5, q6, q7])
+                Q.append(q_solution)
+                
+                # Combine LS flags (OR operation)
+                overall_is_ls = is_LS_12 or is_LS_34
+                is_LS_vec.append(overall_is_ls)
+                
+                # Store solution indices used (wrist joints set to 0 index for consistency)
+                sol_ids_used['q12_idx'].append(i)
+                sol_ids_used['q34_idx'].append(j)
+                sol_ids_used['q56_idx'].append(0)  # Single solution for zero configuration
+    
+    # Convert to numpy array if we have solutions
+    if Q:
+        Q = np.column_stack(Q)  # 7 x num_solutions
+    else:
+        Q = np.zeros((7, 0))  # Empty array with correct shape
+    
+    # Store human vectors for analysis
+    human_vectors = {
+        'S_human': S_human,
+        'E_human': E_human,
+        'W_human': W_human,
+        'SE_human': SE_human,
+        'EW_human': EW_human,
+        'SW_human': SW_human,
+        'SE_human_norm': SE_human_norm,
+        'EW_human_norm': EW_human_norm,
+        'SW_human_norm': SW_human_norm,
+        'S_robot': S_robot,
+        'SE_robot_zero': SE_robot_zero,
+        'EW_robot_zero': EW_robot_zero
+    }
+    
+    return Q, is_LS_vec, human_vectors, sol_ids_used
+
 
 
 def get_robot_SEW_from_q(q, model):

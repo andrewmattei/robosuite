@@ -600,7 +600,7 @@ class HumanPoseDualKinova3Teleop(Device):
             else:
                 palm_center = (index_mcp + pinky_mcp) / 2
                 
-            z_axis = palm_center - wrist
+            z_axis = -(palm_center - wrist)
             z_axis = z_axis / (np.linalg.norm(z_axis) + 1e-8)
             
             # Collect all available MCP points relative to wrist
@@ -690,18 +690,24 @@ class HumanPoseDualKinova3Teleop(Device):
             # Get thumb tip and index finger tip positions
             thumb_tip = landmarks.get('thumb_tip')
             index_tip = landmarks.get('index_finger_tip')
-            
+            middle_tip = landmarks.get('middle_finger_tip')
+            ring_tip = landmarks.get('ring_finger_tip')
+            pinky_tip = landmarks.get('pinky_finger_tip')
+
             if thumb_tip is None or index_tip is None:
                 if self.debug:
-                    print(f"{hand_side} hand: Missing thumb or index tip landmarks - keeping gripper open")
-                return 0.0  # Default to open if landmarks not available
-            
+                    print(f"{hand_side} hand: Missing thumb or index finger tip - keeping gripper open")
+                return 0.0  # Default to open gripper if tips are missing
             # Calculate distance between thumb and index finger tips
-            distance = np.linalg.norm(thumb_tip - index_tip)
-            # print(f"{hand_side} hand: Thumb-Index distance = {distance:.4f}m")
+            index_distance = np.linalg.norm(thumb_tip - index_tip) if index_tip is not None else 1.0
+            middle_distance = np.linalg.norm(thumb_tip - middle_tip) if middle_tip is not None else 1.0
+            ring_distance = np.linalg.norm(thumb_tip - ring_tip) if ring_tip is not None else 1.0
+            pinky_distance = np.linalg.norm(thumb_tip - pinky_tip) if pinky_tip is not None else 1.0
+            distance = np.mean([index_distance, middle_distance, ring_distance, pinky_distance])
+            print(f"{hand_side} hand: Finger distance = {distance:.4f}m")
 
             # Grasp threshold - close gripper when distance < 0.04 meters (4 cm)
-            grasp_threshold = 0.04
+            grasp_threshold = 0.31
             
             if distance < grasp_threshold:
                 grasp_value = 1.0  # Close gripper

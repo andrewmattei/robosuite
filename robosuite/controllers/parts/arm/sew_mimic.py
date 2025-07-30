@@ -3,6 +3,7 @@ from collections.abc import Iterable
 
 from robosuite.controllers.parts.controller import Controller
 from robosuite.projects.shared_scripts.geometric_kinematics_gen3_7dof import IK_2R_2R_3R_SEW, filter_and_select_closest_solution, get_robot_SEW_from_q, rot_numerical
+from robosuite.projects.shared_scripts.geometric_kinematics_gen3_7dof import IK_2R_2R_3R_SEW_wrist_lock
 import robosuite.projects.shared_scripts.optimizing_gen3_arm as opt
 from robosuite.projects.shared_scripts.geometric_kinematics_gen3_7dof import kinova_path
 
@@ -362,9 +363,6 @@ class SEWMimicController(Controller):
         # Only compute IK if all SEW poses are provided
         if self.goal_S is not None and self.goal_E is not None and self.goal_W is not None:
             try:
-                # Call IK_2R_2R_3R_SEW with stored solution indices for consistent solution selection
-                # Note: Currently the IK function doesn't use wrist rotation matrix
-                # When IK_2R_2R_3R_SEW is updated to accept wrist rotation, it can be passed here
                 if self.goal_R_base_wrist is not None:
 
                     # wrist rotation conversion 
@@ -374,18 +372,25 @@ class SEWMimicController(Controller):
                         ez = -ez  # Adjust for left arm if needed
                         ey = -ey  # Adjust for left arm if needed
 
-                    R_T_W = rot_numerical(ez, np.pi/2) #@ rot_numerical(ey, np.pi/6)
+                    R_T_W = rot_numerical(ez, np.pi/2+np.pi) #@ rot_numerical(ey, np.pi/6)
+
+                    R_0_T_kinova = self.goal_R_base_wrist @ R_T_W  # Transform wrist rotation to robot base frame
 
                     # Future: Pass wrist rotation matrix to enhanced IK function
-                    Q_solutions, is_LS_vec, human_vectors, _ = IK_2R_2R_3R_SEW(
-                        self.goal_S, self.goal_E, self.goal_W, self.model_transforms,
-                        sol_ids=self.sol_ids, R_0_T_kinova= self.goal_R_base_wrist @ R_T_W
-                    )
-
                 else:
-                    # No wrist rotation provided - use standard IK
-                    Q_solutions, is_LS_vec, human_vectors, _ = IK_2R_2R_3R_SEW(
-                        self.goal_S, self.goal_E, self.goal_W, self.model_transforms, sol_ids=self.sol_ids
+                    R_0_T_kinova = None
+
+                q7_bias = self.initial_joint[6]  # Use initial q7 value as bias for wrist rotation
+                    
+
+                # Q_solutions, is_LS_vec, human_vectors, _ = IK_2R_2R_3R_SEW(
+                #         self.goal_S, self.goal_E, self.goal_W, self.model_transforms,
+                #         sol_ids=self.sol_ids, R_0_T_kinova= R_0_T_kinova
+                #     )
+
+                Q_solutions, is_LS_vec, human_vectors, _ = IK_2R_2R_3R_SEW_wrist_lock(
+                        self.goal_S, self.goal_E, self.goal_W, self.model_transforms,
+                        sol_ids=self.sol_ids, R_0_T_kinova= R_0_T_kinova, q7_bias=q7_bias
                     )
 
                 # With sol_ids, we should get the specific solution we want

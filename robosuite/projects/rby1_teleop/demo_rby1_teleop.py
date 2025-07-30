@@ -21,20 +21,31 @@ from mediapipe_teleop_device import MediaPipeTeleopDevice
 from sew_mimic_rby1 import SEWMimicRBY1
 
 _HERE = Path(__file__).parent
-_XML = _HERE / "rby1a" / "mujoco" / "model.xml"
-
+_XML = _HERE / "rby1a" / "mujoco" / "model.xml"   # parallel jaw gripper version
 # Joint names for reference (not all used in this simple version)
-joint_names = [
-    # Base joints
-    "left_wheel", "right_wheel",
-    # Arm joints  
-    "torso_0", "torso_1", "torso_2", "torso_3", "torso_4", "torso_5",
-    "right_arm_0", "right_arm_1", "right_arm_2", "right_arm_3", "right_arm_4", "right_arm_5", "right_arm_6",
-    "gripper_finger_r1", "gripper_finger_r2",
-    "left_arm_0", "left_arm_1", "left_arm_2", "left_arm_3", "left_arm_4", "left_arm_5", "left_arm_6", 
-    "gripper_finger_l1", "gripper_finger_l2",
-    "head_0", "head_1",
-]
+# joint_names = [
+#     # Base joints
+#     "left_wheel", "right_wheel",
+#     # Arm joints  
+#     "torso_0", "torso_1", "torso_2", "torso_3", "torso_4", "torso_5",
+#     "right_arm_0", "right_arm_1", "right_arm_2", "right_arm_3", "right_arm_4", "right_arm_5", "right_arm_6",
+#     "gripper_finger_r1", "gripper_finger_r2",
+#     "left_arm_0", "left_arm_1", "left_arm_2", "left_arm_3", "left_arm_4", "left_arm_5", "left_arm_6", 
+#     "gripper_finger_l1", "gripper_finger_l2",
+#     "head_0", "head_1",
+# ]
+
+# _XML = _HERE / "rbyxhand_v2" / "model.xml"  # RBY1 with RBYX hand version
+# joint_names = [
+#     # Base joints
+#     "left_wheel", "right_wheel",
+#     # Arm joints  
+#     "torso_0", "torso_1", "torso_2", "torso_3", "torso_4",
+#     "right_arm_0", "right_arm_1", "right_arm_2", "right_arm_3", "right_arm_4", "right_arm_5", "right_arm_6",
+#     "left_arm_0", "left_arm_1", "left_arm_2",| "left_arm_3", "left_arm_4", "left_arm_5", "left_arm_6", 
+#     "head_0", "head_1",
+# ]
+
 
 class TeleopKeyCallback:
     """Key callback for teleoperation control"""
@@ -97,7 +108,7 @@ def main():
         device.start_control()
         
         # Initialize SEW mimic controller
-        controller = SEWMimicRBY1(model, data, debug=True)
+        controller = SEWMimicRBY1(model, data, debug=False)
         
         print("Teleoperation system initialized successfully!")
         

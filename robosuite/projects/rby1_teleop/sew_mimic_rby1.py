@@ -21,6 +21,7 @@ import os
 
 # Import the IK function and geometric subproblems
 from geometric_kinematics_rby1 import IK_3R_R_3R_SEW, load_rby1_model, get_frame_transforms_from_pinocchio
+from geometric_kinematics_rby1 import IK_3R_R_3R_SEW_wrist_lock
 import robosuite.projects.shared_scripts.geometric_subproblems as gsp
 
 
@@ -117,9 +118,14 @@ class SEWMimicRBY1:
             "left_arm_4", "left_arm_5", "left_arm_6"
         ]
         
-        # Torso joint names in MuJoCo
+        # Torso joint names in MuJoCo with the "rby1a" / "mujoco" / "model.xml"   # parallel jaw gripper version
+        # self.torso_joint_names = [
+        #     "torso_0", "torso_1", "torso_2", "torso_3", "torso_4", "torso_5"
+        # ]
+        
+        # Torso joint names in MuJoCo with the  "rbyxhand_v2" / "rby1.xml"  # RBY1 with RBYX hand version
         self.torso_joint_names = [
-            "torso_0", "torso_1", "torso_2", "torso_3", "torso_4", "torso_5"
+            "torso_0", "torso_1", "torso_2", "torso_3", "torso_4"
         ]
         
         # Get joint qpos addresses using the correct approach
@@ -369,11 +375,23 @@ class SEWMimicRBY1:
                 sol_ids = self.left_arm_sol_ids 
                 q_prev = self.q_prev_left
             
-            # Prepare wrist rotation in robot frame
+            # Prepare wrist rotation in robot frame 
+            # mediapipe has z-axis point from hand to arm, y-axis point out of both hand palm, x-axis point to the right hand thumb.
+            # change to match robot zero config: same z, x-axis point into both hand palm, y-axis point to the right hand thumb.
             R_0_7 = wrist_rotation
+            if R_0_7 is not None:
+                # Default wrist orientation if not provided
+                R_0_7 = R_0_7 @ gsp.rot_numerical(np.array([0.0, 0.0, 1.0]), -np.pi/2)
             
-            # Call IK solver (reset previous solution IDs to avoid list-int comparison errors)
-            Q, is_LS_vec, human_vectors, sol_ids_used = IK_3R_R_3R_SEW(
+            # # Call IK solver (reset previous solution IDs to avoid list-int comparison errors)
+            # Q, is_LS_vec, human_vectors, sol_ids_used = IK_3R_R_3R_SEW(
+            #     S_human, E_human, W_human,
+            #     model_transforms,
+            #     sol_ids=sol_ids,
+            #     R_0_7=R_0_7
+            # )
+
+            Q, is_LS_vec, human_vectors, sol_ids_used = IK_3R_R_3R_SEW_wrist_lock(
                 S_human, E_human, W_human,
                 model_transforms,
                 sol_ids=sol_ids,
@@ -567,7 +585,7 @@ class SEWMimicRBY1:
         torso_mass_matrix = full_mass_matrix[qvel_addrs, :][:, qvel_addrs]
         
         # Add small regularization to avoid singularities
-        torso_mass_matrix += np.eye(6) * 1e-6
+        torso_mass_matrix += np.eye(len(qvel_addrs)) * 1e-6
         
         return torso_mass_matrix
     
@@ -579,8 +597,8 @@ class SEWMimicRBY1:
             np.array: 6-element bias force vector for the torso
         """
         # Get bias forces from MuJoCo (includes gravity and Coriolis/centrifugal forces)
-        bias_forces = np.zeros(6)
-        for i, qvel_addr in enumerate(self.torso_qvel_addrs[:6]):  # Only first 6 joints
+        bias_forces = np.zeros(len(self.torso_qvel_addrs))
+        for i, qvel_addr in enumerate(self.torso_qvel_addrs):
             if qvel_addr < self.model.nv:
                 bias_forces[i] = self.data.qfrc_bias[qvel_addr]
         
@@ -594,8 +612,8 @@ class SEWMimicRBY1:
             np.array: 6-element gravity compensation vector for torso joints
         """
         # Get bias forces from MuJoCo (includes gravity and Coriolis/centrifugal forces)
-        gravity_compensation = np.zeros(6)
-        for i, qvel_addr in enumerate(self.torso_qvel_addrs[:6]):  # Only first 6 joints
+        gravity_compensation = np.zeros(len(self.torso_qvel_addrs))
+        for i, qvel_addr in enumerate(self.torso_qvel_addrs):
             if qvel_addr < self.model.nv:
                 gravity_compensation[i] = self.data.qfrc_bias[qvel_addr]
         
