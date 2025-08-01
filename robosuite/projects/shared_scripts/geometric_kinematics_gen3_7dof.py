@@ -1164,8 +1164,9 @@ def IK_2R_2R_3R_SEW_wrist_lock(S_human, E_human, W_human, model_transforms, sol_
                 q5 = r_z
                 q6 = -r_y 
                 q7 = q7_bias
-                # if q7_bias > 0: # right side (really not the best way lol)
-                #     print("r_x {:.2f}, r_y {:.2f}, r_z {:.2f}".format(r_x, r_y, r_z))
+                if q7_bias < 0:  # left side 
+                    q5 += np.pi
+                    # print("r_x {:.2f}, r_y {:.2f}, r_z {:.2f}".format(r_x, r_y, r_z))
                     
                 # Combine joint angles
                 q_solution = np.array([q1, q2, q3, q4, q5, q6, q7])

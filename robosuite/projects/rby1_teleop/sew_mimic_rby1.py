@@ -18,11 +18,11 @@ import mujoco
 from typing import Optional, Dict, Tuple
 import pinocchio as pin
 import os
+from scipy.spatial.transform import Rotation
 
 # Import the IK function and geometric subproblems
 from geometric_kinematics_rby1 import IK_3R_R_3R_SEW, load_rby1_model, get_frame_transforms_from_pinocchio
 from geometric_kinematics_rby1 import IK_3R_R_3R_SEW_wrist_lock
-import robosuite.projects.shared_scripts.geometric_subproblems as gsp
 
 
 class SEWMimicRBY1:
@@ -262,7 +262,7 @@ class SEWMimicRBY1:
                 E_init = np.array([-0.05, -0.2 if arm_side == 'right' else 0.2, -0.25])  # Elbow position
                 W_init = np.array([0.0, -0.2 if arm_side == 'right' else 0.2, -0.5])  # Wrist position
 
-                R_0_7_init = gsp.rot_numerical(-np.array([0.0, 1.0, 0.0]), np.pi/10)
+                R_0_7_init = Rotation.from_euler('zyx', [0, -np.pi/10, 0]).as_matrix()  # Default wrist orientation
 
                 # Get all possible solutions for the initial SEW configuration
                 Q_solutions, is_LS_vec, human_vectors, sol_ids_used = IK_3R_R_3R_SEW(
@@ -381,8 +381,11 @@ class SEWMimicRBY1:
             R_0_7 = wrist_rotation
             if R_0_7 is not None:
                 # Default wrist orientation if not provided
-                R_0_7 = R_0_7 @ gsp.rot_numerical(np.array([0.0, 0.0, 1.0]), -np.pi/2)
-            
+                if arm_side == 'right':
+                    R_0_7 = R_0_7 @ Rotation.from_euler('zyx', [0, np.pi/2, -np.pi/2]).as_matrix()
+                else:
+                    R_0_7 = R_0_7 @ Rotation.from_euler('zyx', [0, np.pi/2, np.pi/2]).as_matrix()
+
             # # Call IK solver (reset previous solution IDs to avoid list-int comparison errors)
             # Q, is_LS_vec, human_vectors, sol_ids_used = IK_3R_R_3R_SEW(
             #     S_human, E_human, W_human,

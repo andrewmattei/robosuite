@@ -538,9 +538,6 @@ def IK_3R_R_3R_SEW_wrist_lock(S_human, E_human, W_human, model_transforms, sol_i
     EW_human_norm = EW_human / (np.linalg.norm(EW_human) + 1e-12)
     SW_human_norm = SW_human / (np.linalg.norm(SW_human) + 1e-12)
 
-    # TODO: experiment with singularity management with entry point memory, 
-    #       since our spherical range of motion is limited, we can almost do a "wrap-to-pi" style index switching
-    #       to reduce over rotations. Will default to zero facing for now.
     # Calculate the elbow frame position in rby1 base frame
     rE_ez = -SE_human_norm  # Elbow frame z-axis (pointing from elbow to shoulder)
     rE_ey = np.cross(rE_ez, EW_human_norm)  # Elbow frame y-axis (perpendicular to SE and EW)
@@ -624,7 +621,7 @@ def IK_3R_R_3R_SEW_wrist_lock(S_human, E_human, W_human, model_transforms, sol_i
             R_0_5_zero = R_0_4 @ R_45
             R_567 = R_0_5_zero.T @ R_0_7  # Rotation from joint 5 to joint 7 in zero configuration
             r_x, r_y, r_z = tb.rotation_matrix_to_euler(R_567)
-            # if S_human[1] < 0: # right side
+            # if S_human[1] > 0: # right side
             #     print("r_x{:.2f}, r_y{:.2f}, r_z{:.2f}".format(r_x, r_y, r_z))
             q5 = r_z
             q6 = r_y

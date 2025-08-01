@@ -592,17 +592,17 @@ class HumanPoseDualKinova3Teleop(Device):
                 return None
                 
             # Define hand coordinate frame with wrist as origin
-            # Z-axis: from wrist towards palm center (average of finger MCPs)
+            # X-axis: from wrist towards palm center (average of finger MCPs)
             if middle_mcp is not None and ring_mcp is not None:
                 palm_center = (index_mcp + middle_mcp + ring_mcp + pinky_mcp) / 4
             elif middle_mcp is not None:
                 palm_center = (index_mcp + middle_mcp + pinky_mcp) / 3
             else:
                 palm_center = (index_mcp + pinky_mcp) / 2
-                
-            z_axis = -(palm_center - wrist)
-            z_axis = z_axis / (np.linalg.norm(z_axis) + 1e-8)
-            
+
+            x_axis = (palm_center - wrist)
+            x_axis = x_axis / (np.linalg.norm(x_axis) + 1e-8)
+
             # Collect all available MCP points relative to wrist
             mcp_points = []
             if index_mcp is not None:
@@ -633,11 +633,7 @@ class HumanPoseDualKinova3Teleop(Device):
             wrist_to_pinky = pinky_mcp - wrist
             
             # Cross product gives a reference direction
-            if hand_side == 'left':
-                reference_y = np.cross(wrist_to_pinky, wrist_to_index)
-            else:  # right hand
-                reference_y = np.cross(wrist_to_index, wrist_to_pinky)
-            
+            reference_y = np.cross(wrist_to_index, wrist_to_pinky)
             reference_y = reference_y / (np.linalg.norm(reference_y) + 1e-8)
             
             # Choose palm normal direction that aligns with handedness
@@ -645,11 +641,11 @@ class HumanPoseDualKinova3Teleop(Device):
                 palm_normal = -palm_normal
             
             y_axis = palm_normal
-            
-            # X-axis: X = Y × Z (ensuring right-handed coordinate system)
-            x_axis = np.cross(y_axis, z_axis)
-            x_axis = x_axis / (np.linalg.norm(x_axis) + 1e-8)
-            
+
+            # Z-axis: Z = X × Y (ensuring right-handed coordinate system)
+            z_axis = np.cross(x_axis, y_axis)
+            z_axis = z_axis / (np.linalg.norm(z_axis) + 1e-8)
+
             # Create rotation matrix
             rotation_matrix = np.column_stack([x_axis, y_axis, z_axis])
             
@@ -704,7 +700,7 @@ class HumanPoseDualKinova3Teleop(Device):
             ring_distance = np.linalg.norm(thumb_tip - ring_tip) if ring_tip is not None else 1.0
             pinky_distance = np.linalg.norm(thumb_tip - pinky_tip) if pinky_tip is not None else 1.0
             distance = np.mean([index_distance, middle_distance, ring_distance, pinky_distance])
-            print(f"{hand_side} hand: Finger distance = {distance:.4f}m")
+            # print(f"{hand_side} hand: Finger distance = {distance:.4f}m")
 
             # Grasp threshold - close gripper when distance < 0.04 meters (4 cm)
             grasp_threshold = 0.31

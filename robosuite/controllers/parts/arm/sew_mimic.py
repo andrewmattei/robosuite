@@ -1,5 +1,6 @@
 import numpy as np
 from collections.abc import Iterable
+from scipy.spatial.transform import Rotation
 
 from robosuite.controllers.parts.controller import Controller
 from robosuite.projects.shared_scripts.geometric_kinematics_gen3_7dof import IK_2R_2R_3R_SEW, filter_and_select_closest_solution, get_robot_SEW_from_q, rot_numerical
@@ -312,7 +313,7 @@ class SEWMimicController(Controller):
             R_base_body = self.origin_ori.T
             
             # Transform: R_base_wrist = R_base_body @ R_body_wrist
-            R_base_wrist = R_base_body @ R_body_wrist
+            R_base_wrist = R_base_body @ R_body_wrist 
             
             return R_base_wrist
         else:
@@ -372,7 +373,7 @@ class SEWMimicController(Controller):
                         ez = -ez  # Adjust for left arm if needed
                         ey = -ey  # Adjust for left arm if needed
 
-                    R_T_W = rot_numerical(ez, np.pi/2+np.pi) #@ rot_numerical(ey, np.pi/6)
+                    R_T_W = Rotation.from_euler('zyx', [np.pi/2, 0, np.pi/2]).as_matrix()  # Identity rotation for wrist
 
                     R_0_T_kinova = self.goal_R_base_wrist @ R_T_W  # Transform wrist rotation to robot base frame
 
