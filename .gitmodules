@@ -1,4 +1,3 @@
-[submodule "References/xr-360-camera-streamer"]
-	path = References/xr-360-camera-streamer
-	url = https://github.com/yunho-c/xr-360-camera-streamer
-	branch = body-pose
+[submodule "References/XR-Robot-Teleop-Server"]
+	path = References/XR-Robot-Teleop-Server
+	url = https://github.com/yunho-c/XR-Robot-Teleop-Server/
