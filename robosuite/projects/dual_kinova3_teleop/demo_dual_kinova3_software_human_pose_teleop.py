@@ -186,12 +186,22 @@ if __name__ == "__main__":
         model = env.sim.model._model
         data = env.sim.data._data
 
-        with mujoco.viewer.launch_passive(model, data) as viewer:
+        with mujoco.viewer.launch_passive(
+            model=model,
+            data=data,
+            show_left_ui=False,
+            show_right_ui=False,
+            ) as viewer:
             # Set initial camera parameters for good view of dual arms
-            viewer.cam.distance = 3.0
-            viewer.cam.azimuth = 0
-            viewer.cam.elevation = -95
-            viewer.cam.lookat[:] = np.array([-0.5, 0.0, 0.0])
+            # viewer.cam.distance = 3.0
+            # viewer.cam.azimuth = 0
+            # viewer.cam.elevation = -95
+            # viewer.cam.lookat[:] = np.array([-0.5, 0.0, 0.0])
+
+            viewer.cam.distance = 2.5
+            viewer.cam.azimuth = 180
+            viewer.cam.elevation = -15
+            viewer.cam.lookat[:] = [0, 0, 1.0]
 
             print("Simulation viewer launched. Ready for human pose teleoperation!")
             

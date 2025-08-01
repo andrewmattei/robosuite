@@ -1,6 +1,7 @@
 # Toolbox for Kinova Gen3 7 dof robot
 # Put-togethered by: Chuizheng Kong
-# Last Edited: 2025-03-31
+# source: https://github.com/rpiRobotics/rpi_general_robotics_toolbox_py/src/general_robotics_toolbox/general_robotics_toolbox.py
+# Last Edited: 2025-07-30
 
 import os, time, threading
 import numpy as np
@@ -43,6 +44,66 @@ def get_realsense_on_link1_HomoMtx(base):
 
 
 ######################### Rotation Representation Conversions #########################
+
+def q2R(q):
+    """
+    Converts a quaternion into a 3 x 3 rotation matrix according to the
+    Euler-Rodrigues formula.
+    
+    :type    q: numpy.array
+    :param   q: 4 x 1 vector representation of a quaternion q = [qv;q0] or [x, y, z, w]
+    :rtype:  numpy.array
+    :return: the 3x3 rotation matrix    
+    """
+    
+    I = np.identity(3)
+    qhat = hat(q[0:3])
+    qhat2 = qhat.dot(qhat)
+    return I + 2*q[-1]*qhat + 2*qhat2
+
+def R2q(R):
+    """
+    Converts a 3 x 3 rotation matrix into a quaternion.  Quaternion is
+    returned in the form q = [q0;qv].
+    
+    :type    R: numpy.array
+    :param   R: 3 x 3 rotation matrix
+    :rtype:  numpy.array
+    :return: the quaternion as a 4 x 1 vector q = [qv;q0] or [x, y, z, w]
+
+    """
+    
+    tr = np.trace(R)
+    if tr > 0:
+        S = 2*np.sqrt(tr + 1)
+        q = np.array([(0.25*S), \
+                      ((R[2,1] - R[1,2]) / S), \
+                      ((R[0,2] - R[2,0]) / S), \
+                      ((R[1,0] - R[0,1]) / S)])
+                      
+    elif (R[0,0] > R[1,1] and R[0,0] > R[2,2]):
+        S = 2*np.sqrt(1 + R[0,0] - R[1,1] - R[2,2])
+        q = np.array([((R[2,1] - R[1,2]) / S), \
+                      (0.25*S), \
+                      ((R[0,1] + R[1,0]) / S), \
+                      ((R[0,2] + R[2,0]) / S)])
+    elif (R[1,1] > R[2,2]):
+        S = 2*np.sqrt(1 - R[0,0] + R[1,1] - R[2,2])
+        q = np.array([((R[0,2] - R[2,0]) / S), \
+                      ((R[0,1] + R[1,0]) / S), \
+                      (0.25*S), \
+                      ((R[1,2] + R[2,1]) / S)])
+    else:
+        S = 2*np.sqrt(1 - R[0,0] - R[1,1] + R[2,2])
+        q = np.array([((R[1,0] - R[0,1]) / S), \
+                      ((R[0,2] + R[2,0]) / S), \
+                      ((R[1,2] + R[2,1]) / S), \
+                      (0.25*S)])
+
+    q = np.array([q[1], q[2], q[3], q[0]])  # reorder to [x, y, z, w]
+
+    return q
+
 
 def quaternion_rotate_vector(q, v):
     """
@@ -231,6 +292,29 @@ def R2rot(R):
     
     k = invhat(R1)/(2.0*sin_theta)    
     return k, theta
+
+def hat(k):
+    """
+    Returns a 3 x 3 cross product matrix for a 3 x 1 vector
+    
+             [  0 -k3  k2]
+     khat =  [ k3   0 -k1]
+             [-k2  k1   0]
+    
+    :type    k: numpy.array
+    :param   k: 3 x 1 vector
+    :rtype:  numpy.array
+    :return: the 3 x 3 cross product matrix    
+    """
+    
+    khat=np.zeros((3,3))
+    khat[0,1]=-k[2]
+    khat[0,2]=k[1]
+    khat[1,0]=k[2]
+    khat[1,2]=-k[0]
+    khat[2,0]=-k[1]
+    khat[2,1]=k[0]    
+    return khat
 
 
 def invhat(khat):

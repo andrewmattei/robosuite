@@ -130,19 +130,24 @@ class Bone:
 def convert_unity_to_right_handed_z_up(
     position: tuple[float, float, float],
     rotation: tuple[float, float, float, float],
-) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
+) -> tuple[tuple[float, float, float], tuple[float, float, float, float, float, float, float, float, float]]:
     """
-    Converts position and rotation from Unity's left-handed, Y-up coordinate system
+    Converts position and rotation from Unity's left-handed, (X-right,Y-up, Z-forward) coordinate system
     to a right-handed, Z-up coordinate system (+X Forward, +Y Left, +Z Up).
+    Also from quaternion to rotation matrix.
     """
     # Position conversion: Unity (x,y,z) -> (z, -x, y)
     new_position = (position[2], -position[0], position[1])
 
-    # Rotation quaternion conversion: Unity (qx,qy,qz,qw) -> (-qz, qx, -qy, qw)
-    qx, qy, qz, qw = rotation
-    new_rotation = (-qz, qx, -qy, qw)
+    # Rotation quaternion conversion: 
+    # For quaternion conversion, we need to first convert the quaternion from left-handed to right-handed by flipping 
+    # one of the xyz components.
+    # right_hand_quat = np.array([rotation[0], rotation[1], rotation[2], rotation[3]])
+    # from testing, this seems to be the correct conversion
+    right_hand_quat = np.array([-rotation[2],rotation[0], -rotation[1], rotation[3]])
+    R_unity = q2R(right_hand_quat)  # Convert quaternion to rotation matrix
 
-    return new_position, new_rotation
+    return new_position, R_unity.flatten()
 
 
 def deserialize_pose_data(data: bytes) -> list[Bone]:
@@ -175,6 +180,46 @@ def deserialize_pose_data(data: bytes) -> list[Bone]:
     except struct.error as e:
         print(f"Error deserializing pose data: {e}")
     return bones
+
+
+def q2R(q):
+    """
+    Converts a quaternion into a 3 x 3 rotation matrix according to the
+    Euler-Rodrigues formula.
+    
+    :type    q: numpy.array
+    :param   q: 4 x 1 vector representation of a quaternion q = [qv;q0] or [x, y, z, w]
+    :rtype:  numpy.array
+    :return: the 3x3 rotation matrix    
+    """
+    
+    I = np.identity(3)
+    qhat = hat(q[0:3])
+    qhat2 = qhat.dot(qhat)
+    return I + 2*q[-1]*qhat + 2*qhat2
+
+def hat(k):
+    """
+    Returns a 3 x 3 cross product matrix for a 3 x 1 vector
+    
+             [  0 -k3  k2]
+     khat =  [ k3   0 -k1]
+             [-k2  k1   0]
+    
+    :type    k: numpy.array
+    :param   k: 3 x 1 vector
+    :rtype:  numpy.array
+    :return: the 3 x 3 cross product matrix    
+    """
+    
+    khat=np.zeros((3,3))
+    khat[0,1]=-k[2]
+    khat[0,2]=k[1]
+    khat[1,0]=k[2]
+    khat[1,2]=-k[0]
+    khat[2,0]=-k[1]
+    khat[2,1]=k[0]    
+    return khat
 
 
 # --- Robosuite and WebRTC Integration ---

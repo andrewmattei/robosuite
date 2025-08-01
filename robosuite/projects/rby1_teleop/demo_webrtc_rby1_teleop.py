@@ -92,11 +92,14 @@ def _get_body_centric_coordinates(bones: list[Bone]) -> dict:
 
     # Create transformation matrix from world to body-centric frame
     rotation_matrix = np.column_stack([x_axis, y_axis, z_axis])
+    # normalize the rotation matrix
+    U_rot, _, V_rot_T = np.linalg.svd(rotation_matrix)
+    R_world_body = U_rot @ V_rot_T
 
     def transform_to_body_frame(world_pos):
         """Transform a world position to body-centric coordinates."""
         translated = world_pos - shoulder_center
-        body_pos = rotation_matrix.T @ translated
+        body_pos = R_world_body.T @ translated
         return body_pos
 
     # Extract SEW coordinates in body-centric frame
@@ -123,13 +126,25 @@ def _get_body_centric_coordinates(bones: list[Bone]) -> dict:
         W_body = transform_to_body_frame(wrist_pos)
 
         # Get wrist rotation
-        wrist_rot = bone_rotations.get(wrist_id)
+        wrist_rot = bone_rotations.get(wrist_id).reshape(3, 3) if wrist_id in bone_rotations else None
+        if wrist_rot is not None:
+            # Convert wrist rotation to body frame
+            wrist_rot = R_world_body.T @ wrist_rot
+            if side == 'left': # Z in palm, -X in thumb, Y in fingers pointing
+                wrist_rot = wrist_rot @ Rotation.from_euler('zyx', [np.pi/2,-np.pi/2,0]).as_matrix() # some how lowercase is body frame...
+            else: # right arm: -Z in palm, X in thumb, -Y in fingers pointing
+                wrist_rot = wrist_rot @ Rotation.from_euler('zyx', [-np.pi/2,np.pi/2,0]).as_matrix()
+
+        body_frame_wrist_rot = wrist_rot
+        # print(f"Side: {side}, Wrist Rotation: \n{body_frame_wrist_rot}")
+        # Note: after conversion, both hand pointing forward, palms facing each other, thumbs pointing upward should match
+        # the x forward, y left, z up convention in robosuite
 
         sew_coordinates[side] = {
-            "S": S_body,
-            "E": E_body,
-            "W": W_body,
-            "wrist_rot": wrist_rot,
+            'S': S_body,
+            'E': E_body,
+            'W': W_body,
+            'wrist_rot': body_frame_wrist_rot.flatten(),
         }
 
     return sew_coordinates
@@ -175,26 +190,12 @@ def custom_process_bones_to_action(bones: list[Bone]) -> dict:
         return None
 
     # Get wrist rotations
-    left_wrist_rot_quat = sew_coords["left"]["wrist_rot"]
-    right_wrist_rot_quat = sew_coords["right"]["wrist_rot"]
+    left_rot_matrix = sew_coords["left"]["wrist_rot"]
+    right_rot_matrix = sew_coords["right"]["wrist_rot"]
 
-    if left_wrist_rot_quat is None or right_wrist_rot_quat is None:
+    if left_rot_matrix is None or right_rot_matrix is None:
         print("Warning: Could not get wrist rotation. Skipping action.")
         return None
-
-    # Convert to scipy Rotation objects
-    left_wrist_r = Rotation.from_quat(left_wrist_rot_quat)
-    right_wrist_r = Rotation.from_quat(right_wrist_rot_quat)
-
-    # Apply 90-degree rotation offset around Z-axis for gripper alignment
-    z_offset_90_deg = Rotation.from_euler("z", 90, degrees=True)
-
-    left_wrist_r_oriented = left_wrist_r * z_offset_90_deg
-    right_wrist_r_oriented = right_wrist_r * z_offset_90_deg
-
-    # Convert final rotation to rotation matrix
-    left_rot_matrix = left_wrist_r_oriented.as_matrix().flatten()
-    right_rot_matrix = right_wrist_r_oriented.as_matrix().flatten()
 
     # Assemble final action
     left_sew_pos = np.concatenate(
@@ -220,7 +221,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="WebRTC teleoperation demo for RBY1 robot"
     )
-    parser.add_argument("--max_fr", default=30, type=int, help="Maximum frame rate")
+    parser.add_argument("--max_fr", default=1000, type=int, help="Maximum frame rate")
     args = parser.parse_args()
 
     # Check if XML file exists
@@ -245,7 +246,7 @@ def main():
             env=None,  # Not strictly needed for this script
             process_bones_to_action_fn=custom_process_bones_to_action,
         )
-        controller = SEWMimicRBY1(model, data, debug=True)
+        controller = SEWMimicRBY1(model, data, debug=False)
         print("Teleoperation system initialized successfully!")
     except Exception as e:
         print(f"Error initializing teleoperation system: {e}")

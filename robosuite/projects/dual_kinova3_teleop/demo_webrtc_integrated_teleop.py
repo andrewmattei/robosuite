@@ -54,15 +54,18 @@ def _get_body_centric_coordinates(bones: list[Bone]) -> dict:
     x_axis = np.cross(y_axis, z_axis)
     x_axis = x_axis / (np.linalg.norm(x_axis) + 1e-8)
 
-    # Create transformation matrix from world to body-centric frame
+    # Create transformation matrix from world to body-centric frame R_world_body
     rotation_matrix = np.column_stack([x_axis, y_axis, z_axis])
+    # normalize the rotation matrix
+    U_rot, _, V_rot_T = np.linalg.svd(rotation_matrix)
+    R_world_body = U_rot @ V_rot_T
 
     def transform_to_body_frame(world_pos):
         """Transform a world position to body-centric coordinates."""
         # Translate to body origin
         translated = world_pos - body_origin
         # Rotate to body frame
-        body_pos = rotation_matrix.T @ translated
+        body_pos = R_world_body.T @ translated
         return body_pos
 
     # Extract SEW coordinates in body-centric frame
@@ -89,13 +92,25 @@ def _get_body_centric_coordinates(bones: list[Bone]) -> dict:
         W_body = transform_to_body_frame(wrist_pos)
 
         # Get wrist rotation
-        wrist_rot = bone_rotations.get(wrist_id)
+        wrist_rot = bone_rotations.get(wrist_id).reshape(3, 3) if wrist_id in bone_rotations else None
+        if wrist_rot is not None:
+            # Convert wrist rotation to body frame
+            wrist_rot = R_world_body.T @ wrist_rot
+            if side == 'left': # Z in palm, -X in thumb, Y in fingers pointing
+                wrist_rot = wrist_rot @ Rotation.from_euler('zyx', [np.pi/2,-np.pi/2,0]).as_matrix() # some how lowercase is body frame...
+            else: # right arm: -Z in palm, X in thumb, -Y in fingers pointing
+                wrist_rot = wrist_rot @ Rotation.from_euler('zyx', [-np.pi/2,np.pi/2,0]).as_matrix()
+
+        body_frame_wrist_rot = wrist_rot
+        # print(f"Side: {side}, Wrist Rotation: \n{body_frame_wrist_rot}")
+        # Note: after conversion, both hand pointing forward, palms facing each other, thumbs pointing upward should match
+        # the x forward, y left, z up convention in robosuite
 
         sew_coordinates[side] = {
             'S': S_body,
             'E': E_body,
             'W': W_body,
-            'wrist_rot': wrist_rot
+            'wrist_rot': body_frame_wrist_rot.flatten(),
         }
 
     return sew_coordinates
@@ -103,64 +118,63 @@ def _get_body_centric_coordinates(bones: list[Bone]) -> dict:
 
 def custom_process_bones_to_action(bones: list[Bone]) -> dict:
     """
-    A custom function to demonstrate how to override the default action processing.
+    Custom function to process bones into actions for RBY1 robot.
     """
     action_dict = {}
 
-    # --- Get bone positions ---
-    # --- Get bone positions and rotations ---
+    # Get bone positions and rotations
     bone_positions = {b.id: np.array(b.position) for b in bones}
     bone_rotations = {b.id: np.array(b.rotation) for b in bones}
+
+    # Gripper state based on thumb and index finger distance
     left_thumb_tip = bone_positions.get(FullBodyBoneId.FullBody_LeftHandThumbTip)
     left_index_tip = bone_positions.get(FullBodyBoneId.FullBody_LeftHandIndexTip)
     right_thumb_tip = bone_positions.get(FullBodyBoneId.FullBody_RightHandThumbTip)
     right_index_tip = bone_positions.get(FullBodyBoneId.FullBody_RightHandIndexTip)
 
-    # --- Gripper state ---
-    left_gripper_dist = np.linalg.norm(left_thumb_tip - left_index_tip) if left_thumb_tip is not None and left_index_tip is not None else 0.1
-    right_gripper_dist = np.linalg.norm(right_thumb_tip - right_index_tip) if right_thumb_tip is not None and right_index_tip is not None else 0.1
-    left_gripper_action = np.array([1]) if left_gripper_dist > 0.05 else np.array([-1])
-    right_gripper_action = np.array([1]) if right_gripper_dist > 0.05 else np.array([-1])
+    left_gripper_dist = (
+        np.linalg.norm(left_thumb_tip - left_index_tip)
+        if left_thumb_tip is not None and left_index_tip is not None
+        else 0.1
+    )
+    right_gripper_dist = (
+        np.linalg.norm(right_thumb_tip - right_index_tip)
+        if right_thumb_tip is not None and right_index_tip is not None
+        else 0.1
+    )
 
-    # --- Arm control (absolute SEW) ---
+    left_gripper_action = np.array([-1]) if left_gripper_dist > 0.05 else np.array([1])
+    right_gripper_action = (
+        np.array([-1]) if right_gripper_dist > 0.05 else np.array([1])
+    )
+
+    # Arm control (absolute SEW)
     sew_coords = _get_body_centric_coordinates(bones)
 
-    if sew_coords is None or sew_coords['left'] is None or sew_coords['right'] is None:
+    if sew_coords is None or sew_coords["left"] is None or sew_coords["right"] is None:
         print("Warning: Could not calculate SEW coordinates. Skipping action.")
         return None
 
-    # --- Get wrist rotations ---
-    left_wrist_rot_quat = sew_coords['left']['wrist_rot']
-    right_wrist_rot_quat = sew_coords['right']['wrist_rot']
+    # Get wrist rotations
+    left_rot_matrix = sew_coords["left"]["wrist_rot"]
+    right_rot_matrix = sew_coords["right"]["wrist_rot"]
 
-    if left_wrist_rot_quat is None or right_wrist_rot_quat is None:
+    if left_rot_matrix is None or right_rot_matrix is None:
         print("Warning: Could not get wrist rotation. Skipping action.")
         return None
-
-    # Convert to scipy Rotation objects
-    left_wrist_r = Rotation.from_quat(left_wrist_rot_quat)
-    right_wrist_r = Rotation.from_quat(right_wrist_rot_quat)
-
-    # --- Gripper Orientation Offset ---
-    # The human hand's natural "forward" is different from the robot's gripper.
-    # We apply a 90-degree rotation offset around the Z-axis to align them.
-    z_offset_90_deg = Rotation.from_euler('z', 90, degrees=True)
     
-    # Apply the offset
-    left_wrist_r_oriented = left_wrist_r * z_offset_90_deg
-    right_wrist_r_oriented = right_wrist_r * z_offset_90_deg
 
-    # Convert final rotation to rotation matrix for the controller
-    left_rot_matrix = left_wrist_r_oriented.as_matrix().flatten()
-    right_rot_matrix = right_wrist_r_oriented.as_matrix().flatten()
 
-    # --- Assemble final action ---
-    left_sew_pos = np.concatenate([sew_coords['left']['S'], sew_coords['left']['E'], sew_coords['left']['W']])
-    right_sew_pos = np.concatenate([sew_coords['right']['S'], sew_coords['right']['E'], sew_coords['right']['W']])
+    # Assemble final action
+    left_sew_pos = np.concatenate(
+        [sew_coords["left"]["S"], sew_coords["left"]["E"], sew_coords["left"]["W"]]
+    )
+    right_sew_pos = np.concatenate(
+        [sew_coords["right"]["S"], sew_coords["right"]["E"], sew_coords["right"]["W"]]
+    )
 
     left_sew = np.concatenate([left_sew_pos, left_rot_matrix])
     right_sew = np.concatenate([right_sew_pos, right_rot_matrix])
-
 
     action_dict["left_sew"] = left_sew
     action_dict["right_sew"] = right_sew
@@ -216,11 +230,22 @@ if __name__ == "__main__":
     model = env.sim.model._model
     data = env.sim.data._data
 
-    with mujoco.viewer.launch_passive(model, data) as viewer:
-        viewer.cam.distance = 3.0
-        viewer.cam.azimuth = 0
-        viewer.cam.elevation = -95
-        viewer.cam.lookat[:] = np.array([-0.5, 0.0, 0.0])
+    with mujoco.viewer.launch_passive(
+        model=model,
+        data=data,
+        show_left_ui=False,
+        show_right_ui=False,
+        ) as viewer:
+        # Set initial camera parameters for good view of dual arms
+        # viewer.cam.distance = 3.0
+        # viewer.cam.azimuth = 0
+        # viewer.cam.elevation = -95
+        # viewer.cam.lookat[:] = np.array([-0.5, 0.0, 0.0])
+
+        viewer.cam.distance = 2.5
+        viewer.cam.azimuth = 180
+        viewer.cam.elevation = -15
+        viewer.cam.lookat[:] = [0, 0, 1.0]
 
         while viewer.is_running():
             start_time = time.time()

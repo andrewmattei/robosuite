@@ -1,5 +1,7 @@
 # kinova_casadi_utils.py
 
+# TODO Seperate out cpin related code and try to have things that are from pin only (ex. fk)
+
 import pinocchio as pin
 import pinocchio.casadi as cpin
 import casadi as cs
