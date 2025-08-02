@@ -64,8 +64,8 @@ def _get_body_centric_coordinates(bones: list[Bone]) -> dict:
     bone_rotations = {b.id: np.array(b.rotation) for b in bones}
 
     # Get key body landmarks
-    left_shoulder = bone_positions.get(FullBodyBoneId.FullBody_LeftShoulder)
-    right_shoulder = bone_positions.get(FullBodyBoneId.FullBody_RightShoulder)
+    left_shoulder = bone_positions.get(FullBodyBoneId.FullBody_LeftArmUpper)
+    right_shoulder = bone_positions.get(FullBodyBoneId.FullBody_RightArmUpper)
     hips = bone_positions.get(FullBodyBoneId.FullBody_Hips)
 
     if left_shoulder is None or right_shoulder is None or hips is None:
@@ -106,7 +106,7 @@ def _get_body_centric_coordinates(bones: list[Bone]) -> dict:
     for side in ["left", "right"]:
         side_key_pascal = side.capitalize()
 
-        shoulder_id = getattr(FullBodyBoneId, f"FullBody_{side_key_pascal}Shoulder")
+        shoulder_id = getattr(FullBodyBoneId, f"FullBody_{side_key_pascal}ArmUpper")
         elbow_id = getattr(FullBodyBoneId, f"FullBody_{side_key_pascal}ArmLower")
         wrist_id = getattr(FullBodyBoneId, f"FullBody_{side_key_pascal}HandWrist")
 
