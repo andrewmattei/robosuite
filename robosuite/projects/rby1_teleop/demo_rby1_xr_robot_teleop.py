@@ -14,12 +14,10 @@ from pathlib import Path
 import mujoco
 import numpy as np
 from scipy.spatial.transform import Rotation
+from xr_robot_teleop_server.schemas.body_pose import Bone
+from xr_robot_teleop_server.schemas.openxr_skeletons import FullBodyBoneId
 
-from robosuite.devices.webrtc_body_pose_device import (
-    Bone,
-    WebRTCBodyPoseDevice,
-    FullBodyBoneId,
-)
+from robosuite.devices.xr_robot_teleop_client import XRRTCBodyPoseDevice
 from sew_mimic_rby1 import SEWMimicRBY1
 import sys
 import traceback
@@ -126,14 +124,24 @@ def _get_body_centric_coordinates(bones: list[Bone]) -> dict:
         W_body = transform_to_body_frame(wrist_pos)
 
         # Get wrist rotation
-        wrist_rot = bone_rotations.get(wrist_id).reshape(3, 3) if wrist_id in bone_rotations else None
+        wrist_rot = (
+            bone_rotations.get(wrist_id).reshape(3, 3)
+            if wrist_id in bone_rotations
+            else None
+        )
         if wrist_rot is not None:
             # Convert wrist rotation to body frame
             wrist_rot = R_world_body.T @ wrist_rot
-            if side == 'left': # Z in palm, -X in thumb, Y in fingers pointing
-                wrist_rot = wrist_rot @ Rotation.from_euler('zyx', [np.pi/2,-np.pi/2,0]).as_matrix() # some how lowercase is body frame...
-            else: # right arm: -Z in palm, X in thumb, -Y in fingers pointing
-                wrist_rot = wrist_rot @ Rotation.from_euler('zyx', [-np.pi/2,np.pi/2,0]).as_matrix()
+            if side == "left":  # Z in palm, -X in thumb, Y in fingers pointing
+                wrist_rot = (
+                    wrist_rot
+                    @ Rotation.from_euler("zyx", [np.pi / 2, -np.pi / 2, 0]).as_matrix()
+                )  # some how lowercase is body frame...
+            else:  # right arm: -Z in palm, X in thumb, -Y in fingers pointing
+                wrist_rot = (
+                    wrist_rot
+                    @ Rotation.from_euler("zyx", [-np.pi / 2, np.pi / 2, 0]).as_matrix()
+                )
 
         body_frame_wrist_rot = wrist_rot
         # print(f"Side: {side}, Wrist Rotation: \n{body_frame_wrist_rot}")
@@ -141,10 +149,10 @@ def _get_body_centric_coordinates(bones: list[Bone]) -> dict:
         # the x forward, y left, z up convention in robosuite
 
         sew_coordinates[side] = {
-            'S': S_body,
-            'E': E_body,
-            'W': W_body,
-            'wrist_rot': body_frame_wrist_rot.flatten(),
+            "S": S_body,
+            "E": E_body,
+            "W": W_body,
+            "wrist_rot": body_frame_wrist_rot.flatten(),
         }
 
     return sew_coordinates
@@ -242,7 +250,7 @@ def main():
     # Initialize teleoperation components
     print("Initializing teleoperation system...")
     try:
-        device = WebRTCBodyPoseDevice(
+        device = XRRTCBodyPoseDevice(
             env=None,  # Not strictly needed for this script
             process_bones_to_action_fn=custom_process_bones_to_action,
         )

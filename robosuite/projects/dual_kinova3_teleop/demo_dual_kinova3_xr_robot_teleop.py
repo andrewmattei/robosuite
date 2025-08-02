@@ -8,15 +8,20 @@ import numpy as np
 
 import robosuite as suite
 from scipy.spatial.transform import Rotation
+from xr_robot_teleop_server.schemas.body_pose import Bone
+from xr_robot_teleop_server.schemas.openxr_skeletons import FullBodyBoneId
 
 # Get the path of robosuite
-repo_path = os.path.abspath(os.path.join(os.path.abspath(__file__), os.pardir, os.pardir, os.pardir))
-dual_kinova3_sew_config_path = os.path.join(repo_path, "controllers", "config", "robots", "dualkinova3_sew_mimic.json")
+repo_path = os.path.abspath(
+    os.path.join(os.path.abspath(__file__), os.pardir, os.pardir, os.pardir)
+)
+dual_kinova3_sew_config_path = os.path.join(
+    repo_path, "controllers", "config", "robots", "dualkinova3_sew_mimic.json"
+)
 
 from robosuite import load_composite_controller_config
-from robosuite.devices.webrtc_body_pose_device import Bone, WebRTCBodyPoseDevice, FullBodyBoneId
+from robosuite.devices.xr_robot_teleop_client import XRRTCBodyPoseDevice
 from robosuite.wrappers import VisualizationWrapper
-
 
 
 def _get_body_centric_coordinates(bones: list[Bone]) -> dict:
@@ -71,12 +76,12 @@ def _get_body_centric_coordinates(bones: list[Bone]) -> dict:
     # Extract SEW coordinates in body-centric frame
     sew_coordinates = {}
 
-    for side in ['left', 'right']:
+    for side in ["left", "right"]:
         side_key_pascal = side.capitalize()
 
-        shoulder_id = getattr(FullBodyBoneId, f'FullBody_{side_key_pascal}Shoulder')
-        elbow_id = getattr(FullBodyBoneId, f'FullBody_{side_key_pascal}ArmLower')
-        wrist_id = getattr(FullBodyBoneId, f'FullBody_{side_key_pascal}HandWrist')
+        shoulder_id = getattr(FullBodyBoneId, f"FullBody_{side_key_pascal}Shoulder")
+        elbow_id = getattr(FullBodyBoneId, f"FullBody_{side_key_pascal}ArmLower")
+        wrist_id = getattr(FullBodyBoneId, f"FullBody_{side_key_pascal}HandWrist")
 
         shoulder_pos = bone_positions.get(shoulder_id)
         elbow_pos = bone_positions.get(elbow_id)
@@ -92,14 +97,24 @@ def _get_body_centric_coordinates(bones: list[Bone]) -> dict:
         W_body = transform_to_body_frame(wrist_pos)
 
         # Get wrist rotation
-        wrist_rot = bone_rotations.get(wrist_id).reshape(3, 3) if wrist_id in bone_rotations else None
+        wrist_rot = (
+            bone_rotations.get(wrist_id).reshape(3, 3)
+            if wrist_id in bone_rotations
+            else None
+        )
         if wrist_rot is not None:
             # Convert wrist rotation to body frame
             wrist_rot = R_world_body.T @ wrist_rot
-            if side == 'left': # Z in palm, -X in thumb, Y in fingers pointing
-                wrist_rot = wrist_rot @ Rotation.from_euler('zyx', [np.pi/2,-np.pi/2,0]).as_matrix() # some how lowercase is body frame...
-            else: # right arm: -Z in palm, X in thumb, -Y in fingers pointing
-                wrist_rot = wrist_rot @ Rotation.from_euler('zyx', [-np.pi/2,np.pi/2,0]).as_matrix()
+            if side == "left":  # Z in palm, -X in thumb, Y in fingers pointing
+                wrist_rot = (
+                    wrist_rot
+                    @ Rotation.from_euler("zyx", [np.pi / 2, -np.pi / 2, 0]).as_matrix()
+                )  # some how lowercase is body frame...
+            else:  # right arm: -Z in palm, X in thumb, -Y in fingers pointing
+                wrist_rot = (
+                    wrist_rot
+                    @ Rotation.from_euler("zyx", [-np.pi / 2, np.pi / 2, 0]).as_matrix()
+                )
 
         body_frame_wrist_rot = wrist_rot
         # print(f"Side: {side}, Wrist Rotation: \n{body_frame_wrist_rot}")
@@ -107,10 +122,10 @@ def _get_body_centric_coordinates(bones: list[Bone]) -> dict:
         # the x forward, y left, z up convention in robosuite
 
         sew_coordinates[side] = {
-            'S': S_body,
-            'E': E_body,
-            'W': W_body,
-            'wrist_rot': body_frame_wrist_rot.flatten(),
+            "S": S_body,
+            "E": E_body,
+            "W": W_body,
+            "wrist_rot": body_frame_wrist_rot.flatten(),
         }
 
     return sew_coordinates
@@ -162,8 +177,6 @@ def custom_process_bones_to_action(bones: list[Bone]) -> dict:
     if left_rot_matrix is None or right_rot_matrix is None:
         print("Warning: Could not get wrist rotation. Skipping action.")
         return None
-    
-
 
     # Assemble final action
     left_sew_pos = np.concatenate(
@@ -184,11 +197,12 @@ def custom_process_bones_to_action(bones: list[Bone]) -> dict:
     return action_dict
 
 
-
 # --- Main Simulation Script ---
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Integrated WebRTC teleoperation demo for robosuite")
+    parser = argparse.ArgumentParser(
+        description="Integrated WebRTC teleoperation demo for robosuite"
+    )
     parser.add_argument("--environment", type=str, default="DualKinova3SRLEnv")
     parser.add_argument("--robots", nargs="+", type=str, default="DualKinova3")
     parser.add_argument("--controller", type=str, default=dual_kinova3_sew_config_path)
@@ -215,14 +229,15 @@ if __name__ == "__main__":
     np.set_printoptions(formatter={"float": lambda x: "{0:0.3f}".format(x)})
 
     # 2. Set up the device.
-    device = WebRTCBodyPoseDevice(env=env, process_bones_to_action_fn=custom_process_bones_to_action)
-
+    device = XRRTCBodyPoseDevice(
+        env=env, process_bones_to_action_fn=custom_process_bones_to_action
+    )
 
     # 3. Wait for the VR client to connect.
     print("\nWaiting for a VR client to connect...")
     while not device.is_connected:
         time.sleep(0.5)
-    
+
     print("Client connected! Starting robosuite simulation.")
 
     # 4. Run the simulation loop.
@@ -235,7 +250,7 @@ if __name__ == "__main__":
         data=data,
         show_left_ui=False,
         show_right_ui=False,
-        ) as viewer:
+    ) as viewer:
         # Set initial camera parameters for good view of dual arms
         # viewer.cam.distance = 3.0
         # viewer.cam.azimuth = 0
@@ -249,12 +264,12 @@ if __name__ == "__main__":
 
         while viewer.is_running():
             start_time = time.time()
-            
+
             # Get the latest pose action from the shared state
             action = device.input2action()
 
             if action is None:
-                time.sleep(0.01) # Wait for the first pose to arrive
+                time.sleep(0.01)  # Wait for the first pose to arrive
                 continue
 
             env.step(action)

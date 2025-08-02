@@ -39,4 +39,4 @@ matplotlib
 ipykernel
 
 # xr-teleop server
-xr-360-camera-streamer
+xr-robot-teleop-server
