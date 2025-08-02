@@ -10,6 +10,14 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal"
-        }
+        },
+        {
+            "name": "Debug with `mjpython`",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "python": "${cwd}/.venv/lib/python3.13/site-packages/mujoco/MuJoCo_(mjpython).app/Contents/MacOS/mjpython"
+        },
     ]
 }
