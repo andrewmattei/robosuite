@@ -17,7 +17,7 @@ from scipy.spatial.transform import Rotation
 from xr_robot_teleop_server.schemas.body_pose import Bone
 from xr_robot_teleop_server.schemas.openxr_skeletons import FullBodyBoneId
 
-from robosuite.devices.xr_robot_teleop_client import XRRTCBodyPoseDevice
+from robosuite.devices.xr_robot_teleop_client import XRRTCBodyPoseDevice, q2R
 from sew_mimic_rby1 import SEWMimicRBY1
 import sys
 import traceback
@@ -125,9 +125,7 @@ def _get_body_centric_coordinates(bones: list[Bone]) -> dict:
 
         # Get wrist rotation
         wrist_rot = (
-            bone_rotations.get(wrist_id).reshape(3, 3)
-            if wrist_id in bone_rotations
-            else None
+            q2R(bone_rotations.get(wrist_id)) if wrist_id in bone_rotations else None
         )
         if wrist_rot is not None:
             # Convert wrist rotation to body frame

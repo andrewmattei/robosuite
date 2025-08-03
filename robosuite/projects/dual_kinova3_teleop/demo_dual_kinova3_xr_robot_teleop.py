@@ -20,7 +20,7 @@ dual_kinova3_sew_config_path = os.path.join(
 )
 
 from robosuite import load_composite_controller_config
-from robosuite.devices.xr_robot_teleop_client import XRRTCBodyPoseDevice
+from robosuite.devices.xr_robot_teleop_client import XRRTCBodyPoseDevice, q2R
 from robosuite.wrappers import VisualizationWrapper
 
 
@@ -98,9 +98,7 @@ def _get_body_centric_coordinates(bones: list[Bone]) -> dict:
 
         # Get wrist rotation
         wrist_rot = (
-            bone_rotations.get(wrist_id).reshape(3, 3)
-            if wrist_id in bone_rotations
-            else None
+            q2R(bone_rotations.get(wrist_id)) if wrist_id in bone_rotations else None
         )
         if wrist_rot is not None:
             # Convert wrist rotation to body frame
