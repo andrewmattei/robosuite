@@ -40,6 +40,7 @@ class MediaPipeTeleopDevice:
         # Setup MediaPipe pose estimation
         self.mp_pose = mp.solutions.pose
         self.mp_hands = mp.solutions.hands
+        self.mp_head = mp.solutions.face_mesh
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_drawing_styles = mp.solutions.drawing_styles
         
@@ -56,6 +57,14 @@ class MediaPipeTeleopDevice:
             max_num_hands=2,
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5
+        )
+
+        # Initialize face detection
+        self.head = self.mp_head.FaceMesh(
+            static_image_mode=False,
+            max_num_faces=1,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
         )
         
         # Camera setup
@@ -106,6 +115,9 @@ class MediaPipeTeleopDevice:
             "left": {"landmarks": None, "confidence": 0.0},
             "right": {"landmarks": None, "confidence": 0.0}
         }
+
+        # Head pose tracking
+        self.human_head_pose = None
         
         self._display_controls()
         self._reset_internal_state()
@@ -140,6 +152,9 @@ class MediaPipeTeleopDevice:
             "left": {"landmarks": None, "confidence": 0.0},
             "right": {"landmarks": None, "confidence": 0.0}
         }
+
+        self.human_head_pose = None
+        
         self.engaged = False
     
     def start_control(self):
@@ -177,10 +192,12 @@ class MediaPipeTeleopDevice:
                 # Process pose
                 pose_results = self.pose.process(rgb_frame)
                 hand_results = self.hands.process(rgb_frame)
+                head_results = self.head.process(rgb_frame)
                 
                 # Process landmarks
                 self._process_pose_landmarks(pose_results, frame)
                 self._process_hand_landmarks(hand_results, pose_results, frame)
+                self._process_head_landmarks(head_results, pose_results, frame)
                 
                 # Update controller state
                 with self.controller_state_lock:
@@ -647,6 +664,155 @@ class MediaPipeTeleopDevice:
                 print(f"Error computing grasp for {hand_side} hand: {e}")
                 traceback.print_exc()
             return 0.0  # Default to open gripper on error
+        
+
+    def _process_head_landmarks(self, head_results, pose_results, frame):
+        """Process MediaPipe face landmarks to compute head orientation."""
+        self.human_head_pose = None  # Reset head pose
+        
+        if not head_results.multi_face_landmarks or not pose_results.pose_world_landmarks:
+            return
+
+        try:
+            body_centric_coords = self._get_body_centric_coordinates(pose_results)
+            if not body_centric_coords:
+                return
+            
+            head_centric_landmarks = self._get_head_centric_coordinates(head_results, body_centric_coords)
+            
+            if head_centric_landmarks:
+                head_rotation = self._compute_head_rotation(head_centric_landmarks)
+                if head_rotation is not None:
+                    self.human_head_pose = head_rotation
+
+            # Draw face landmarks on frame
+            if self.debug:
+                for face_landmarks in head_results.multi_face_landmarks:
+                    self.mp_drawing.draw_landmarks(
+                        image=frame,
+                        landmark_list=face_landmarks,
+                        connections=self.mp_head.FACEMESH_TESSELATION,
+                        landmark_drawing_spec=None,
+                        connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_tesselation_style())
+                    self.mp_drawing.draw_landmarks(
+                        image=frame,
+                        landmark_list=face_landmarks,
+                        connections=self.mp_head.FACEMESH_CONTOURS,
+                        landmark_drawing_spec=None,
+                        connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_contours_style())
+                    self.mp_drawing.draw_landmarks(
+                        image=frame,
+                        landmark_list=face_landmarks,
+                        connections=self.mp_head.FACEMESH_IRISES,
+                        landmark_drawing_spec=None,
+                        connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_iris_connections_style())
+
+        except Exception as e:
+            print(f"Error processing head landmarks: {e}")
+            traceback.print_exc()
+
+    def _get_head_centric_coordinates(self, head_results, body_centric_coords):
+        """
+        Convert MediaPipe face landmarks to the body-centric coordinate system.
+        
+        Args:
+            head_results: MediaPipe face mesh detection results.
+            body_centric_coords: Body-centric coordinate system from _get_body_centric_coordinates().
+            
+        Returns:
+            Dictionary containing specified head landmarks in the body-centric frame, or None if not available.
+        """
+        if not head_results.multi_face_landmarks or not body_centric_coords:
+            return None
+
+        # Use the first detected face
+        face_landmarks = head_results.multi_face_landmarks[0]
+        
+        # Get body frame transformation for converting to body-centric coordinates
+        body_frame = body_centric_coords['body_frame']
+        body_origin = body_frame['origin']
+        body_rotation_matrix = np.column_stack([
+            body_frame['x_axis'], 
+            body_frame['y_axis'], 
+            body_frame['z_axis']
+        ])
+
+        def world_to_body_frame(world_pos):
+            """Converts world position to body-centric coordinates."""
+            translated = world_pos - body_origin
+            return body_rotation_matrix.T @ translated
+
+        # Define the head landmarks to be tracked
+        # Using specified landmarks from Google's MediaPipe Face Mesh
+        landmark_indices = {
+            'nose_tip': 1,
+            'left_eye': 133,
+            'right_eye': 362,
+            'left_ear': 234,
+            'right_ear': 454
+        }
+
+        head_centric_landmarks = {}
+        for name, idx in landmark_indices.items():
+            landmark = face_landmarks.landmark[idx]
+            world_pos = np.array([landmark.x, landmark.y, landmark.z])
+            head_centric_landmarks[name] = world_to_body_frame(world_pos)
+            
+        return head_centric_landmarks
+
+    def _compute_head_rotation(self, head_landmarks):
+        """
+        Compute head rotation matrix from face landmarks.
+        
+        Args:
+            head_landmarks (dict): Head landmarks in body-centric coordinates.
+            
+        Returns:
+            np.array: 3x3 rotation matrix representing head orientation in body frame, or None if computation fails.
+        """
+        try:
+            # Get key landmarks for defining head coordinate frame
+            left_eye = head_landmarks.get('left_eye')
+            right_eye = head_landmarks.get('right_eye')
+            nose_tip = head_landmarks.get('nose_tip')
+
+            if any(lm is None for lm in [left_eye, right_eye, nose_tip]):
+                return None
+                
+            # Define head coordinate frame
+            # Y-axis: from right to left eye
+            y_axis = left_eye - right_eye
+            y_axis = y_axis / (np.linalg.norm(y_axis) + 1e-8)
+            
+            # Z-axis: Approximated as pointing upwards, perpendicular to the eye line and the vector from eye-center to nose
+            eye_center = (left_eye + right_eye) / 2
+            eye_center_to_nose = nose_tip - eye_center
+            
+            # Z-axis is orthogonal to both y_axis and eye_center_to_nose
+            z_axis = np.cross(y_axis, eye_center_to_nose)
+            z_axis = z_axis / (np.linalg.norm(z_axis) + 1e-8)
+
+            # X-axis: Forward direction (cross product of Y and Z)
+            x_axis = np.cross(y_axis, z_axis)
+            x_axis = x_axis / (np.linalg.norm(x_axis) + 1e-8)
+            
+            # Create rotation matrix
+            rotation_matrix = np.column_stack([x_axis, y_axis, z_axis])
+            
+            # Validate that it's a proper rotation matrix
+            if np.abs(np.linalg.det(rotation_matrix) - 1.0) > 0.1:
+                if self.debug:
+                    print(f"Warning: Invalid rotation matrix computed for head.")
+                return None
+                
+            return rotation_matrix
+            
+        except Exception as e:
+            if self.debug:
+                print(f"Error computing head rotation: {e}")
+                traceback.print_exc()
+            return None
+
     
     def _check_engagement(self):
         """Check if user is engaged based on arm positions and visibility."""

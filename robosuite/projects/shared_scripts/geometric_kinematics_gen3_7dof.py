@@ -1,5 +1,5 @@
 import pinocchio as pin
-import pinocchio.casadi as cpin
+
 
 from robosuite.projects.shared_scripts.geometric_subproblems import *
 import robosuite.utils.tool_box_no_ros as tb
