@@ -5,7 +5,7 @@ from copy import deepcopy
 import enum
 
 import numpy as np
-from xr_360_camera_streamer.streaming import WebRTCServer
+from xr_robot_teleop_server.streaming import WebRTCServer
 
 from robosuite.devices.device import Device
 
