@@ -17,32 +17,6 @@ from xr_robot_teleop_server.streaming import WebRTCServer
 from robosuite.devices.device import Device
 
 
-def convert_unity_to_right_handed_z_up(
-    position: tuple[float, float, float],
-    rotation: tuple[float, float, float, float],
-) -> tuple[
-    tuple[float, float, float],
-    tuple[float, float, float, float, float, float, float, float, float],
-]:
-    """
-    Converts position and rotation from Unity's left-handed, (X-right,Y-up, Z-forward) coordinate system
-    to a right-handed, Z-up coordinate system (+X Forward, +Y Left, +Z Up).
-    Also from quaternion to rotation matrix.
-    """
-    # Position conversion: Unity (x,y,z) -> (z, -x, y)
-    new_position = (position[2], -position[0], position[1])
-
-    # Rotation quaternion conversion:
-    # For quaternion conversion, we need to first convert the quaternion from left-handed to right-handed by flipping
-    # one of the xyz components.
-    # right_hand_quat = np.array([rotation[0], rotation[1], rotation[2], rotation[3]])
-    # from testing, this seems to be the correct conversion
-    right_hand_quat = np.array([-rotation[2], rotation[0], -rotation[1], rotation[3]])
-    R_unity = q2R(right_hand_quat)  # Convert quaternion to rotation matrix
-
-    return new_position, R_unity.flatten()
-
-
 def q2R(q):
     """
     Converts a quaternion into a 3 x 3 rotation matrix according to the
