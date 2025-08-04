@@ -1,224 +1,60 @@
-import struct
 import threading
-import time
 from copy import deepcopy
-import enum
 
 import numpy as np
+from xr_robot_teleop_server import configure_logging
+from xr_robot_teleop_server.schemas.body_pose import (
+    Bone,
+    deserialize_pose_data,
+)
+
+# from xr_robot_teleop_server.schemas.openxr_skeletons import (
+#     FULL_BODY_SKELETON_CONNECTIONS,
+#     FullBodyBoneId,
+# )
 from xr_robot_teleop_server.streaming import WebRTCServer
 
 from robosuite.devices.device import Device
-
-
-class FullBodyBoneId(enum.IntEnum):
-    """Specifies the bone IDs for a full body skeleton, including legs and feet."""
-
-    FullBody_Start = 0
-    FullBody_Root = 0
-    FullBody_Hips = 1
-    FullBody_SpineLower = 2
-    FullBody_SpineMiddle = 3
-    FullBody_SpineUpper = 4
-    FullBody_Chest = 5
-    FullBody_Neck = 6
-    FullBody_Head = 7
-    FullBody_LeftShoulder = 8
-    FullBody_LeftScapula = 9
-    FullBody_LeftArmUpper = 10
-    FullBody_LeftArmLower = 11
-    FullBody_LeftHandWristTwist = 12
-    FullBody_RightShoulder = 13
-    FullBody_RightScapula = 14
-    FullBody_RightArmUpper = 15
-    FullBody_RightArmLower = 16
-    FullBody_RightHandWristTwist = 17
-    FullBody_LeftHandPalm = 18
-    FullBody_LeftHandWrist = 19
-    FullBody_LeftHandThumbMetacarpal = 20
-    FullBody_LeftHandThumbProximal = 21
-    FullBody_LeftHandThumbDistal = 22
-    FullBody_LeftHandThumbTip = 23
-    FullBody_LeftHandIndexMetacarpal = 24
-    FullBody_LeftHandIndexProximal = 25
-    FullBody_LeftHandIndexIntermediate = 26
-    FullBody_LeftHandIndexDistal = 27
-    FullBody_LeftHandIndexTip = 28
-    FullBody_LeftHandMiddleMetacarpal = 29
-    FullBody_LeftHandMiddleProximal = 30
-    FullBody_LeftHandMiddleIntermediate = 31
-    FullBody_LeftHandMiddleDistal = 32
-    FullBody_LeftHandMiddleTip = 33
-    FullBody_LeftHandRingMetacarpal = 34
-    FullBody_LeftHandRingProximal = 35
-    FullBody_LeftHandRingIntermediate = 36
-    FullBody_LeftHandRingDistal = 37
-    FullBody_LeftHandRingTip = 38
-    FullBody_LeftHandLittleMetacarpal = 39
-    FullBody_LeftHandLittleProximal = 40
-    FullBody_LeftHandLittleIntermediate = 41
-    FullBody_LeftHandLittleDistal = 42
-    FullBody_LeftHandLittleTip = 43
-    FullBody_RightHandPalm = 44
-    FullBody_RightHandWrist = 45
-    FullBody_RightHandThumbMetacarpal = 46
-    FullBody_RightHandThumbProximal = 47
-    FullBody_RightHandThumbDistal = 48
-    FullBody_RightHandThumbTip = 49
-    FullBody_RightHandIndexMetacarpal = 50
-    FullBody_RightHandIndexProximal = 51
-    FullBody_RightHandIndexIntermediate = 52
-    FullBody_RightHandIndexDistal = 53
-    FullBody_RightHandIndexTip = 54
-    FullBody_RightHandMiddleMetacarpal = 55
-    FullBody_RightHandMiddleProximal = 56
-    FullBody_RightHandMiddleIntermediate = 57
-    FullBody_RightHandMiddleDistal = 58
-    FullBody_RightHandMiddleTip = 59
-    FullBody_RightHandRingMetacarpal = 60
-    FullBody_RightHandRingProximal = 61
-    FullBody_RightHandRingIntermediate = 62
-    FullBody_RightHandRingDistal = 63
-    FullBody_RightHandRingTip = 64
-    FullBody_RightHandLittleMetacarpal = 65
-    FullBody_RightHandLittleProximal = 66
-    FullBody_RightHandLittleIntermediate = 67
-    FullBody_RightHandLittleDistal = 68
-    FullBody_RightHandLittleTip = 69
-    FullBody_LeftUpperLeg = 70
-    FullBody_LeftLowerLeg = 71
-    FullBody_LeftFootAnkleTwist = 72
-    FullBody_LeftFootAnkle = 73
-    FullBody_LeftFootSubtalar = 74
-    FullBody_LeftFootTransverse = 75
-    FullBody_LeftFootBall = 76
-    FullBody_RightUpperLeg = 77
-    FullBody_RightLowerLeg = 78
-    FullBody_RightFootAnkleTwist = 79
-    FullBody_RightFootAnkle = 80
-    FullBody_RightFootSubtalar = 81
-    FullBody_RightFootTransverse = 82
-    FullBody_RightFootBall = 83
-    FullBody_End = 84
-
-    @classmethod
-    def _missing_(cls, value):
-        return "FullBody_Unknown"
-
-
-# --- Data Structures and Deserialization ---
-# This section is adapted from the 360_server_unity.py example to process
-# incoming data from a VR client.
-
-
-class Bone:
-    """A simple data structure to hold deserialized bone data."""
-
-    def __init__(
-        self,
-        id: int,
-        position: tuple[float, float, float],
-        rotation: tuple[float, float, float, float],
-    ):
-        self.id = id
-        self.position = position
-        self.rotation = rotation
-
-    def __repr__(self):
-        return f"Bone(id={self.id}, pos={self.position}, rot={self.rotation})"
-
-
-def convert_unity_to_right_handed_z_up(
-    position: tuple[float, float, float],
-    rotation: tuple[float, float, float, float],
-) -> tuple[tuple[float, float, float], tuple[float, float, float, float, float, float, float, float, float]]:
-    """
-    Converts position and rotation from Unity's left-handed, (X-right,Y-up, Z-forward) coordinate system
-    to a right-handed, Z-up coordinate system (+X Forward, +Y Left, +Z Up).
-    Also from quaternion to rotation matrix.
-    """
-    # Position conversion: Unity (x,y,z) -> (z, -x, y)
-    new_position = (position[2], -position[0], position[1])
-
-    # Rotation quaternion conversion: 
-    # For quaternion conversion, we need to first convert the quaternion from left-handed to right-handed by flipping 
-    # one of the xyz components.
-    # right_hand_quat = np.array([rotation[0], rotation[1], rotation[2], rotation[3]])
-    # from testing, this seems to be the correct conversion
-    right_hand_quat = np.array([-rotation[2],rotation[0], -rotation[1], rotation[3]])
-    R_unity = q2R(right_hand_quat)  # Convert quaternion to rotation matrix
-
-    return new_position, R_unity.flatten()
-
-
-def deserialize_pose_data(data: bytes) -> list[Bone]:
-    """
-    Deserializes a binary pose data stream from Unity, converting to a
-    right-handed, Z-up coordinate system.
-    Format: int32 (bone_count), then for each bone: int32 (id) + 7*float32 (pos/rot).
-    """
-    bones = []
-    offset = 0
-    try:
-        (bone_count,) = struct.unpack_from("<i", data, offset)
-        offset += 4
-        for _ in range(bone_count):
-            if offset + 32 > len(data):
-                break  # Avoid reading past the buffer
-            bone_data = struct.unpack_from("<i7f", data, offset)
-            offset += 32
-
-            position = tuple(bone_data[1:4])
-            rotation = tuple(bone_data[4:8])
-
-            # Convert coordinate system from Unity to Robosuite
-            new_position, new_rotation = convert_unity_to_right_handed_z_up(
-                position, rotation
-            )
-
-            bones.append(Bone(bone_data[0], new_position, new_rotation))
-
-    except struct.error as e:
-        print(f"Error deserializing pose data: {e}")
-    return bones
 
 
 def q2R(q):
     """
     Converts a quaternion into a 3 x 3 rotation matrix according to the
     Euler-Rodrigues formula.
-    
+
     :type    q: numpy.array
     :param   q: 4 x 1 vector representation of a quaternion q = [qv;q0] or [x, y, z, w]
     :rtype:  numpy.array
-    :return: the 3x3 rotation matrix    
+    :return: the 3x3 rotation matrix
     """
-    
+
     I = np.identity(3)
     qhat = hat(q[0:3])
     qhat2 = qhat.dot(qhat)
-    return I + 2*q[-1]*qhat + 2*qhat2
+    return I + 2 * q[-1] * qhat + 2 * qhat2
+
 
 def hat(k):
     """
     Returns a 3 x 3 cross product matrix for a 3 x 1 vector
-    
+
              [  0 -k3  k2]
      khat =  [ k3   0 -k1]
              [-k2  k1   0]
-    
+
     :type    k: numpy.array
     :param   k: 3 x 1 vector
     :rtype:  numpy.array
-    :return: the 3 x 3 cross product matrix    
+    :return: the 3 x 3 cross product matrix
     """
-    
-    khat=np.zeros((3,3))
-    khat[0,1]=-k[2]
-    khat[0,2]=k[1]
-    khat[1,0]=k[2]
-    khat[1,2]=-k[0]
-    khat[2,0]=-k[1]
-    khat[2,1]=k[0]    
+
+    khat = np.zeros((3, 3))
+    khat[0, 1] = -k[2]
+    khat[0, 2] = k[1]
+    khat[1, 0] = k[2]
+    khat[1, 2] = -k[0]
+    khat[2, 0] = -k[1]
+    khat[2, 1] = k[0]
     return khat
 
 
@@ -259,9 +95,9 @@ class StateFactory:
         return self.instance
 
 
-class WebRTCBodyPoseDevice(Device):
+class XRRTCBodyPoseDevice(Device):
     """
-    A device to control a robot using body pose data from a WebRTC stream.
+    A device to control a robot using body pose data from XR Robot Teleop Client.
     """
 
     def __init__(self, env, process_bones_to_action_fn=None, **kwargs):
@@ -281,6 +117,8 @@ class WebRTCBodyPoseDevice(Device):
             self.process_bones_to_action_fn = process_bones_to_action_fn
 
         datachannel_handlers = {"body_pose": self.on_body_pose_message}
+
+        configure_logging(level="INFO")  # set xr_robot_teleop's verbosity
         self.server = WebRTCServer(
             datachannel_handlers=datachannel_handlers,
             state_factory=self.state_factory,
