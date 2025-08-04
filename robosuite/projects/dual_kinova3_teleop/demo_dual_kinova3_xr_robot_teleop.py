@@ -100,6 +100,7 @@ def _get_body_centric_coordinates(bones: list[Bone]) -> dict:
         wrist_rot = (
             q2R(bone_rotations.get(wrist_id)) if wrist_id in bone_rotations else None
         )
+        # print(f"Side: {side}, Wrist Rotation Meta SDK: \n{wrist_rot}")
         if wrist_rot is not None:
             # Convert wrist rotation to body frame
             wrist_rot = R_world_body.T @ wrist_rot

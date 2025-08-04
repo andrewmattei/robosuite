@@ -621,8 +621,10 @@ def IK_3R_R_3R_SEW_wrist_lock(S_human, E_human, W_human, model_transforms, sol_i
             R_0_5_zero = R_0_4 @ R_45
             R_567 = R_0_5_zero.T @ R_0_7  # Rotation from joint 5 to joint 7 in zero configuration
             r_x, r_y, r_z = tb.rotation_matrix_to_euler(R_567)
-            # if S_human[1] > 0: # right side
-            #     print("r_x{:.2f}, r_y{:.2f}, r_z{:.2f}".format(r_x, r_y, r_z))
+            # if S_human[1] > 0: # left side
+            #     print("left: r_x{:.2f}, r_y{:.2f}, r_z{:.2f}".format(r_x, r_y, r_z))
+            # else:  # right side
+            #     print("right: r_x{:.2f}, r_y{:.2f}, r_z{:.2f}".format(r_x, r_y, r_z))
             q5 = r_z
             q6 = r_y
             q7 = 0

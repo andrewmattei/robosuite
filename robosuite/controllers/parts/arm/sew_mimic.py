@@ -372,12 +372,15 @@ class SEWMimicController(Controller):
                     if self.part_name == "left":
                         ez = -ez  # Adjust for left arm if needed
                         ey = -ey  # Adjust for left arm if needed
+                        # print(f"R_base_wrist: \n{self.goal_R_base_wrist}")
 
-                    R_T_W = Rotation.from_euler('zyx', [np.pi/2, 0, np.pi/2]).as_matrix()  # Identity rotation for wrist
-
-                    R_0_T_kinova = self.goal_R_base_wrist @ R_T_W  # Transform wrist rotation to robot base frame
-
-                    # Future: Pass wrist rotation matrix to enhanced IK function
+                    # R_W_T = Rotation.from_euler('zyx', [np.pi/2, 0, np.pi/2]).as_matrix()  # thumb align with +y of EE
+                    R_W_T = Rotation.from_euler('zyx', [np.pi, -np.pi/2, 0]).as_matrix() # back of the hand align with +y of EE
+    
+                    # Transform wrist rotation to robot base frame
+                    R_base_body = self.origin_ori.T
+                    R_W_T = R_base_body @ R_W_T @ R_base_body.T  # Convert to robot base frame
+                    R_0_T_kinova = self.goal_R_base_wrist @ R_W_T  # Transform wrist rotation to robot base frame
                 else:
                     R_0_T_kinova = None
 
